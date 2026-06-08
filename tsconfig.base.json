@@ -2,7 +2,6 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "commonjs",
-    "moduleResolution": "node",
     "lib": ["ES2022"],
     "strict": true,
     "noImplicitAny": true,
@@ -18,8 +17,7 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "incremental": true,
-    "ignoreDeprecations": "5.0"
+    "incremental": true
   },
   "exclude": ["node_modules", "dist", ".next"]
 }
