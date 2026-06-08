@@ -1,0 +1,121 @@
+# Render Blueprint — Kanika Design Automation
+#
+# Topology (chosen for a single-boutique deploy):
+#   - One Render web service runs the Express API AND the BullMQ worker in-process
+#     (START_EMBEDDED_WORKERS=true), backed by a persistent disk for uploaded media.
+#   - The Next.js dashboard is hosted separately on Vercel.
+#   - PostgreSQL and Redis (Key Value) are existing managed instances; paste their
+#     URLs into DATABASE_URL / REDIS_URL in the Render dashboard.
+#
+# A persistent disk pins the service to a single instance and requires a paid
+# instance type (starter or higher). That is the right trade-off here: it keeps
+# product images and WhatsApp media across deploys without an object store.
+#
+# After the first deploy, seed the admin once from the service Shell:
+#   SEED_ADMIN_EMAIL="you@example.com" SEED_ADMIN_PASSWORD="<strong>" npm run db:seed
+
+services:
+  - type: web
+    name: kda-backend
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: main
+    # npm ci alone can skip devDependencies under NODE_ENV=production; --include=dev
+    # guarantees the TypeScript and Prisma CLIs needed to build are present.
+    buildCommand: npm ci --include=dev && npm run db:generate && npm run build:backend
+    # Run migrations once per deploy, before the new version takes traffic.
+    preDeployCommand: npm run db:migrate:deploy
+    startCommand: npm run start:backend
+    healthCheckPath: /health
+    disk:
+      name: uploads
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: UPLOADS_DIR
+        value: /var/data/uploads
+      # Run the BullMQ worker inside this web process (single-service topology).
+      - key: START_EMBEDDED_WORKERS
+        value: "true"
+
+      # ---- Existing managed infrastructure (paste values in the dashboard) ----
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+
+      # ---- Auth ----
+      # Render generates a strong value; satisfies the >=32 char production check.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: COOKIE_SECURE
+        value: "true"
+      # Backend (Render) and dashboard (Vercel) are different sites → cross-site cookie.
+      - key: COOKIE_SAME_SITE
+        value: none
+      # Leave blank for host-only cookies (correct for cross-site Render + Vercel).
+      - key: COOKIE_DOMAIN
+        sync: false
+
+      # ---- Public URLs ----
+      # PUBLIC_BACKEND_URL: this service's URL, e.g. https://kda-backend.onrender.com
+      # PUBLIC_DASHBOARD_URL: the Vercel dashboard URL (drives CORS + cookie checks).
+      - key: PUBLIC_BACKEND_URL
+        sync: false
+      - key: PUBLIC_DASHBOARD_URL
+        sync: false
+
+      # ---- Meta WhatsApp Cloud API ----
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_ACCESS_TOKEN
+        sync: false
+      - key: META_PHONE_NUMBER_ID
+        sync: false
+      - key: META_WABA_ID
+        sync: false
+      - key: META_WEBHOOK_VERIFY_TOKEN
+        sync: false
+      - key: META_GRAPH_API_VERSION
+        value: v23.0
+
+      # ---- Google Gemini ----
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: CHATBOT_DEBUG
+        value: "false"
+      - key: CHATBOT_ENABLE_AI_IMAGE_MATCHING
+        value: "false"
+
+      # ---- Chatbot / orders behavior ----
+      - key: ORDER_RESERVATION_MINUTES
+        value: "120"
+      - key: SUPPORT_NUDGE_DELAY_MINUTES
+        value: "3"
+      - key: SUPPORT_PHONE_NUMBER
+        sync: false
+
+      # ---- Printing ----
+      - key: PRINT_PROVIDER
+        value: manual
+
+      # ---- Business ----
+      - key: BUSINESS_NAME
+        value: Kanika Designs
+      - key: UPI_ID
+        sync: false
+      - key: DEFAULT_SHIPPING_FEE
+        value: "100"
+      - key: OWNER_WHATSAPP_NUMBER
+        sync: false
+      - key: ADMIN_WHATSAPP_NUMBERS
+        sync: false

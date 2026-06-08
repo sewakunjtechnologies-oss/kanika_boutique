@@ -17,4 +17,8 @@ export const bullConnection = {
   password: parsed.password || undefined,
   username: parsed.username || undefined,
   db: parsed.pathname && parsed.pathname.length > 1 ? Number(parsed.pathname.slice(1)) : 0,
+  // Managed Redis (Render Key Value, Upstash, etc.) is served over TLS via the
+  // rediss:// scheme. Without this, BullMQ connects in plaintext and the handshake
+  // fails. Building from the URL by hand drops the scheme, so re-add TLS here.
+  ...(parsed.protocol === 'rediss:' ? { tls: { servername: parsed.hostname } } : {}),
 };

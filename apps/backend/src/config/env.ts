@@ -25,8 +25,15 @@ const cookieSameSite = z.preprocess((value) => {
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  // Hosts like Render/Heroku inject the listen port via PORT; we map it onto
+  // BACKEND_PORT below so a single env var works everywhere.
   BACKEND_PORT: z.coerce.number().int().positive().default(3001),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+
+  // Absolute directory for uploaded media. Defaults to <repo>/uploads when unset
+  // (local dev); in production point this at a persistent disk mount, e.g.
+  // /var/data/uploads on Render.
+  UPLOADS_DIR: z.string().optional(),
 
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
@@ -94,6 +101,10 @@ const cleaned: Record<string, string | undefined> = {};
 for (const [k, v] of Object.entries(process.env)) {
   cleaned[k] = v === '' ? undefined : v;
 }
+
+// Many PaaS hosts (Render, Heroku, Railway) inject the bind port as PORT.
+// Honor it without forcing operators to also set BACKEND_PORT.
+cleaned.BACKEND_PORT ??= cleaned.PORT;
 
 // Support common WhatsApp env names used by tutorials without hardcoding secrets.
 cleaned.META_ACCESS_TOKEN ??= cleaned.WHATSAPP_TOKEN;
