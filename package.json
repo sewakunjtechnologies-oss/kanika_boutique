@@ -1,0 +1,47 @@
+{
+  "name": "kanika-design-automation",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WhatsApp order automation system for a single-number Indian boutique (Coexistence-aware).",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n backend,dashboard -c blue,green --prefix \"[{name}]\" \"npm:dev:backend\" \"npm:dev:dashboard\"",
+    "dev:backend": "npm run dev --workspace=@kda/backend",
+    "dev:dashboard": "npm run dev --workspace=@kda/dashboard",
+    "build": "npm run build:packages && npm run build:apps",
+    "build:packages": "npm run build --workspace=@kda/db && npm run build --workspace=@kda/shared",
+    "build:apps": "npm run build --workspace=@kda/backend && npm run build --workspace=@kda/dashboard",
+    "build:backend": "npm run build:packages && npm run build --workspace=@kda/backend",
+    "build:dashboard": "npm run build --workspace=@kda/dashboard",
+    "start:backend": "npm run start --workspace=@kda/backend",
+    "start:worker": "npm run start:worker --workspace=@kda/backend",
+    "typecheck": "npm run typecheck --workspace=@kda/backend && npm run typecheck --workspace=@kda/dashboard",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "db:generate": "npm run generate --workspace=@kda/db",
+    "db:migrate": "npm run migrate --workspace=@kda/db",
+    "db:migrate:deploy": "npm run migrate:deploy --workspace=@kda/db",
+    "db:migrate:init": "npm run migrate:init --workspace=@kda/db",
+    "db:seed": "npm run seed --workspace=@kda/db",
+    "db:seed:products": "npm run seed:products --workspace=@kda/db",
+    "db:reset:demo": "npm run reset:demo --workspace=@kda/db",
+    "db:link:images": "npm run link:images --workspace=@kda/db",
+    "db:studio": "npm run studio --workspace=@kda/db",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "testai": "npm run testai --workspace=@kda/backend --",
+    "qa:bot": "npm run qa:bot --workspace=@kda/backend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "prettier": "^3.3.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

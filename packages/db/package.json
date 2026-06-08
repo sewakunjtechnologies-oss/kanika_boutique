@@ -1,0 +1,36 @@
+{
+  "name": "@kda/db",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "generate": "dotenv -e ../../.env -- prisma generate",
+    "migrate": "dotenv -e ../../.env -- prisma migrate dev",
+    "migrate:init": "dotenv -e ../../.env -- prisma migrate dev --name init",
+    "migrate:deploy": "dotenv -e ../../.env -- prisma migrate deploy",
+    "migrate:reset": "dotenv -e ../../.env -- prisma migrate reset",
+    "studio": "dotenv -e ../../.env -- prisma studio",
+    "format": "prisma format",
+    "seed": "dotenv -e ../../.env -- npx ts-node --transpile-only seed.ts",
+    "seed:products": "dotenv -e ../../.env -- npx ts-node --transpile-only seedProducts.ts",
+    "reset:demo": "dotenv -e ../../.env -- npx ts-node --transpile-only resetDemo.ts",
+    "link:images": "dotenv -e ../../.env -- npx ts-node --transpile-only linkProductImages.ts"
+  },
+  "prisma": {
+    "seed": "dotenv -e ../../.env -- npx ts-node --transpile-only seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20.17.10",
+    "bcryptjs": "^2.4.3",
+    "dotenv-cli": "^7.4.4",
+    "prisma": "^5.22.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3"
+  }
+}

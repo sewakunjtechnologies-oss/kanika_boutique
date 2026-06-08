@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Production builds
+dist/
+build/
+.next/
+out/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# Runtime
+uploads/*
+!uploads/.gitkeep
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Prisma generated
+packages/db/src/generated/
+
+# TypeScript
+*.tsbuildinfo
+
+# Test
+coverage/

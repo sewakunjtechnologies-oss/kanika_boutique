@@ -1,0 +1,1 @@
+ALTER TYPE "ConversationState" ADD VALUE 'AWAITING_NEW_PRODUCT';
