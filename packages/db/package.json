@@ -5,11 +5,11 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
     "generate": "prisma generate --schema=prisma/schema.prisma",
     "migrate:deploy": "prisma migrate deploy --schema=prisma/schema.prisma",
     "migrate": "prisma migrate dev --schema=prisma/schema.prisma",
     "studio": "prisma studio --schema=prisma/schema.prisma",
+    "build": "tsc -p tsconfig.json",
     "format": "prisma format",
     "seed": "dotenv -e ../../.env -- npx ts-node --transpile-only seed.ts",
     "seed:products": "dotenv -e ../../.env -- npx ts-node --transpile-only seedProducts.ts",
@@ -20,14 +20,14 @@
     "seed": "dotenv -e ../../.env -- npx ts-node --transpile-only seed.ts"
   },
   "dependencies": {
-    "@prisma/client": "^5.22.0"
+    "@prisma/client": "5.22.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20.17.10",
     "bcryptjs": "^2.4.3",
     "dotenv-cli": "^7.4.4",
-    "prisma": "^5.22.0",
+    "prisma": "5.22.0",
     "ts-node": "^10.9.2",
     "typescript": "5.9.3"
   }
