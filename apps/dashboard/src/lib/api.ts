@@ -12,7 +12,7 @@ if (process.env.NODE_ENV === 'production' && configuredBackendUrl && isLocalhost
 // proxy /api/* and /uploads/* to the backend, so the browser only talks to this origin
 // and the session cookie stays first-party (required for iOS Safari, which blocks
 // third-party cookies). The empty base makes fetch("/api/...") hit this origin.
-const BACKEND_URL = '';
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ? new URL(process.env.NEXT_PUBLIC_BACKEND_URL).origin : '';
 
 // Absolute backend origin, used only for the direct Socket.IO connection (WebSockets
 // can't be proxied through Vercel rewrites).
