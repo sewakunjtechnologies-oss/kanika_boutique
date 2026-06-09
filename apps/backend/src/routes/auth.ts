@@ -4,7 +4,13 @@ import { z } from 'zod';
 import { prisma } from '@kda/db';
 import { logger } from '../logger';
 import { requireAuth } from '../auth/middleware';
-import { SESSION_COOKIE_NAME, SESSION_COOKIE_OPTIONS, signAuthToken } from '../auth/jwt';
+import { signAuthToken } from '../auth/jwt';
+import {
+  DASHBOARD_SESSION_COOKIE_NAME,
+  destroySession,
+  getClearSessionCookieOptions,
+  regenerateSession,
+} from '../auth/session';
 
 export const authRouter = Router();
 
@@ -23,6 +29,7 @@ authRouter.post('/auth/login', async (req: Request, res: Response): Promise<void
 
   const user = await prisma.adminUser.findUnique({
     where: { email: email.toLowerCase() },
+    select: { id: true, email: true, name: true, role: true, passwordHash: true },
   });
   if (!user) {
     res.status(401).json({ error: 'invalid_credentials' });
@@ -34,25 +41,29 @@ authRouter.post('/auth/login', async (req: Request, res: Response): Promise<void
     return;
   }
 
-  const token = signAuthToken({ sub: user.id, email: user.email, role: user.role });
-  res.cookie(SESSION_COOKIE_NAME, token, SESSION_COOKIE_OPTIONS);
-  logger.info({ userId: user.id, email: user.email }, 'login success');
+  await regenerateSession(req);
+  req.session.userId = user.id;
+  req.session.email = user.email;
+  req.session.role = user.role;
+  req.session.createdAt = new Date().toISOString();
+
+  logger.info({ userId: user.id, email: user.email }, 'login success: server session created');
   res.json({
+    authenticated: true,
     user: { id: user.id, email: user.email, name: user.name, role: user.role },
   });
 });
 
-authRouter.post('/auth/logout', (req: Request, res: Response): void => {
-  // Clear with the same attributes (sameSite/secure/domain/path) the cookie was set with,
-  // otherwise the browser keeps the original cookie.
-  res.clearCookie(SESSION_COOKIE_NAME, { ...SESSION_COOKIE_OPTIONS, maxAge: undefined });
-  logger.info({ userId: req.auth?.sub ?? null }, 'logout: session cookie cleared');
+authRouter.post('/auth/logout', async (req: Request, res: Response): Promise<void> => {
+  const userId = req.session?.userId ?? null;
+  await destroySession(req);
+  res.clearCookie(DASHBOARD_SESSION_COOKIE_NAME, getClearSessionCookieOptions());
+  logger.info({ userId }, 'logout: server session destroyed');
   res.json({ ok: true });
 });
 
-// Short-lived token for the Socket.IO handshake. The dashboard fetches this over the
-// first-party proxied API (so the session cookie is sent even on iOS Safari), then
-// connects to the socket cross-site using the token instead of the cookie.
+// Short-lived token for the Socket.IO handshake. The browser session remains
+// server-side; this token is only for direct cross-site WebSocket auth.
 authRouter.get('/auth/socket-token', requireAuth, (req: Request, res: Response): void => {
   const { sub, email, role } = req.auth!;
   const token = signAuthToken({ sub, email, role });
@@ -61,14 +72,14 @@ authRouter.get('/auth/socket-token', requireAuth, (req: Request, res: Response):
 });
 
 authRouter.get('/auth/me', requireAuth, async (req: Request, res: Response): Promise<void> => {
-  const userId = req.auth!.sub;
-  const user = await prisma.adminUser.findUnique({
-    where: { id: userId },
-    select: { id: true, email: true, name: true, role: true },
-  });
+  const user = req.user;
   if (!user) {
-    res.status(404).json({ error: 'user_not_found' });
+    res.status(401).json({ authenticated: false });
     return;
   }
-  res.json({ user });
+  logger.debug({ userId: user.id }, 'auth me: authenticated');
+  res.json({
+    authenticated: true,
+    user: { id: user.id, email: user.email, name: user.name, role: user.role },
+  });
 });

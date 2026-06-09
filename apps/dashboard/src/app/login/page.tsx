@@ -31,7 +31,9 @@ function LoginForm(): React.ReactElement {
     setLoading(true);
     try {
       await api.post('/api/auth/login', { email, password });
-      router.push(next);
+      await api.get('/api/auth/me');
+      router.replace(next);
+      router.refresh();
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         toast.error('Wrong email or password');

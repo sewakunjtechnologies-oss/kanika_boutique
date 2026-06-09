@@ -31,11 +31,11 @@ export function initSocketIO(httpServer: http.Server): Server {
 
   const ns = io.of(DASHBOARD_NAMESPACE);
 
-  // Auth middleware: read JWT from handshake auth or cookie.
+  // Auth middleware: read the short-lived socket JWT from handshake auth.
+  // Browser login itself is a server-side session cookie; the socket token is
+  // fetched over /api/auth/socket-token because Vercel cannot proxy WebSockets.
   ns.use((socket: Socket, next) => {
-    const token =
-      (socket.handshake.auth?.token as string | undefined) ??
-      extractCookie(socket.handshake.headers.cookie, 'kda_session');
+    const token = socket.handshake.auth?.token as string | undefined;
     if (!token) return next(new Error('unauthorized'));
     const payload = verifyAuthToken(token);
     if (!payload) return next(new Error('unauthorized'));
@@ -63,13 +63,4 @@ export async function closeSocketIO(): Promise<void> {
   if (!io) return;
   await io.close();
   io = null;
-}
-
-function extractCookie(cookieHeader: string | undefined, name: string): string | null {
-  if (!cookieHeader) return null;
-  for (const part of cookieHeader.split(';')) {
-    const [k, ...rest] = part.trim().split('=');
-    if (k === name) return decodeURIComponent(rest.join('='));
-  }
-  return null;
 }

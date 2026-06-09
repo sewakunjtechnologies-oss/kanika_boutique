@@ -79,10 +79,13 @@ const envSchema = z.object({
   AUTO_PRINT_ON_PAYMENT_APPROVAL: envBool.default(false),
 
   // Auth.
-  JWT_SECRET: z.string().default('dev_jwt_secret_change_in_prod'),
-  COOKIE_DOMAIN: z.string().optional(),
-  COOKIE_SECURE: envBool.default(false),
-  COOKIE_SAME_SITE: cookieSameSite.default('lax'),
+  SESSION_SECRET: z.string().default('dev_session_secret_change_in_prod'),
+  SESSION_COOKIE_NAME: z.string().default('kda.sid'),
+  SESSION_COOKIE_MAX_AGE_DAYS: z.coerce.number().positive().default(7),
+  SESSION_COOKIE_SAMESITE: cookieSameSite.optional(),
+  SESSION_COOKIE_SECURE: envBool.optional(),
+  SESSION_COOKIE_DOMAIN: z.string().optional(),
+  JWT_SECRET: z.string().default(''),
 
   // Dashboard URL (for CORS).
   DASHBOARD_PORT: z.coerce.number().int().positive().default(3000),
@@ -128,6 +131,13 @@ if (!parsed.success) {
   process.exit(1);
 }
 
+const envData = parsed.data;
+envData.SESSION_COOKIE_SECURE ??= envData.NODE_ENV === 'production';
+envData.SESSION_COOKIE_SAMESITE ??= areSameSiteUrls(envData.PUBLIC_BACKEND_URL, envData.PUBLIC_DASHBOARD_URL)
+  ? 'lax'
+  : 'none';
+envData.JWT_SECRET ||= envData.SESSION_SECRET;
+
 const productionErrors: Record<string, string[]> = {};
 function addProductionError(key: string, message: string): void {
   productionErrors[key] = [...(productionErrors[key] ?? []), message];
@@ -137,7 +147,7 @@ if (parsed.data.NODE_ENV === 'production') {
   for (const key of [
     'DATABASE_URL',
     'REDIS_URL',
-    'JWT_SECRET',
+    'SESSION_SECRET',
     'META_APP_SECRET',
     'META_ACCESS_TOKEN',
     'META_PHONE_NUMBER_ID',
@@ -147,11 +157,11 @@ if (parsed.data.NODE_ENV === 'production') {
   ] as const) {
     if (!cleaned[key]) addProductionError(key, 'is required in production');
   }
-  if (!cleaned.JWT_SECRET || cleaned.JWT_SECRET.length < 32) {
-    addProductionError('JWT_SECRET', 'must be set to at least 32 characters in production');
+  if (!cleaned.SESSION_SECRET || cleaned.SESSION_SECRET.length < 32) {
+    addProductionError('SESSION_SECRET', 'must be set to at least 32 characters in production');
   }
-  if (!parsed.data.COOKIE_SECURE) {
-    addProductionError('COOKIE_SECURE', 'must be true in production');
+  if (!envData.SESSION_COOKIE_SECURE) {
+    addProductionError('SESSION_COOKIE_SECURE', 'must be true in production');
   }
   if (!parsed.data.GEMINI_API_KEY) addProductionError('GEMINI_API_KEY', 'is required in production');
   if (isLocalhostUrl(parsed.data.PUBLIC_BACKEND_URL)) {
@@ -160,18 +170,18 @@ if (parsed.data.NODE_ENV === 'production') {
   if (isLocalhostUrl(parsed.data.PUBLIC_DASHBOARD_URL)) {
     addProductionError('PUBLIC_DASHBOARD_URL', 'must not point to localhost in production');
   }
-  if (parsed.data.COOKIE_DOMAIN && isLocalhostHost(parsed.data.COOKIE_DOMAIN)) {
-    addProductionError('COOKIE_DOMAIN', 'must not be localhost in production');
+  if (envData.SESSION_COOKIE_DOMAIN && isLocalhostHost(envData.SESSION_COOKIE_DOMAIN)) {
+    addProductionError('SESSION_COOKIE_DOMAIN', 'must not be localhost in production');
   }
-  if (parsed.data.COOKIE_SAME_SITE === 'none' && !parsed.data.COOKIE_SECURE) {
-    addProductionError('COOKIE_SAME_SITE', 'none requires COOKIE_SECURE=true');
+  if (envData.SESSION_COOKIE_SAMESITE === 'none' && !envData.SESSION_COOKIE_SECURE) {
+    addProductionError('SESSION_COOKIE_SAMESITE', 'none requires SESSION_COOKIE_SECURE=true');
   }
   if (
     !areSameSiteUrls(parsed.data.PUBLIC_BACKEND_URL, parsed.data.PUBLIC_DASHBOARD_URL) &&
-    parsed.data.COOKIE_SAME_SITE !== 'none'
+    envData.SESSION_COOKIE_SAMESITE !== 'none'
   ) {
     addProductionError(
-      'COOKIE_SAME_SITE',
+      'SESSION_COOKIE_SAMESITE',
       'must be none when backend and dashboard are on different site domains',
     );
   }
@@ -197,7 +207,7 @@ if (Object.keys(productionErrors).length > 0) {
   process.exit(1);
 }
 
-export const env = parsed.data;
+export const env = envData;
 
 // Non-fatal warnings: in production these should be set, but we don't want dev startup to fail.
 export function logMetaWarnings(warn: (msg: string) => void): void {

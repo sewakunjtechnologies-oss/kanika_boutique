@@ -23,9 +23,9 @@ services:
     branch: main
     # npm ci alone can skip devDependencies under NODE_ENV=production; --include=dev
     # guarantees the TypeScript and Prisma CLIs needed to build are present.
-    buildCommand: npm ci --include=dev && npm run db:generate && npm run build:backend
+    buildCommand: npm ci --include=dev && npx prisma@5.22.0 generate --schema packages/db/prisma/schema.prisma && npm run build:backend
     # Run migrations once per deploy, before the new version takes traffic.
-    preDeployCommand: npm run db:migrate:deploy
+    preDeployCommand: npx prisma@5.22.0 migrate deploy --schema packages/db/prisma/schema.prisma
     startCommand: npm run start:backend
     healthCheckPath: /health
     disk:
@@ -51,15 +51,19 @@ services:
 
       # ---- Auth ----
       # Render generates a strong value; satisfies the >=32 char production check.
-      - key: JWT_SECRET
+      - key: SESSION_SECRET
         generateValue: true
-      - key: COOKIE_SECURE
+      - key: SESSION_COOKIE_NAME
+        value: kda.sid
+      - key: SESSION_COOKIE_MAX_AGE_DAYS
+        value: "7"
+      - key: SESSION_COOKIE_SECURE
         value: "true"
       # Backend (Render) and dashboard (Vercel) are different sites → cross-site cookie.
-      - key: COOKIE_SAME_SITE
+      - key: SESSION_COOKIE_SAMESITE
         value: none
       # Leave blank for host-only cookies (correct for cross-site Render + Vercel).
-      - key: COOKIE_DOMAIN
+      - key: SESSION_COOKIE_DOMAIN
         sync: false
 
       # ---- Public URLs ----
@@ -69,6 +73,10 @@ services:
         sync: false
       - key: PUBLIC_DASHBOARD_URL
         sync: false
+      - key: DASHBOARD_URL
+        value: https://kanika-boutique-dashboard.vercel.app
+      - key: CORS_ORIGINS
+        value: https://kanika-boutique-dashboard.vercel.app,https://dashboard.kanikaboutique.com
 
       # ---- Meta WhatsApp Cloud API ----
       - key: META_APP_ID

@@ -8,6 +8,7 @@ import pinoHttp from 'pino-http';
 import { env, logMetaWarnings } from './config/env';
 import { allowedOrigins, normalizeOrigin } from './config/cors';
 import { logger } from './logger';
+import { createDashboardSessionMiddleware } from './auth/session';
 import { prisma } from '@kda/db';
 import { webhookRouter } from './routes/webhook';
 import { authRouter } from './routes/auth';
@@ -31,6 +32,7 @@ import { closeSocketIO, initSocketIO } from './realtime/io';
 
 const app = express();
 const server = http.createServer(app);
+app.set('trust proxy', 1);
 
 // ===== CORS configuration =====
 // allowedOrigins (shared with the Socket.IO server) is normalized + de-duplicated from
@@ -79,6 +81,7 @@ app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/health'
 
 // ===== Cookies =====
 app.use(cookieParser());
+app.use(createDashboardSessionMiddleware());
 
 // ===== Body parsing — capture rawBody for webhook signature verification =====
 app.use(

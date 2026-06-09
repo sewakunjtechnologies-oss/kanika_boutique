@@ -30,14 +30,3 @@ export function verifyAuthToken(token: string): AuthPayload | null {
     return null;
   }
 }
-
-export const SESSION_COOKIE_NAME = 'kda_session';
-
-export const SESSION_COOKIE_OPTIONS = {
-  httpOnly: true,
-  sameSite: env.COOKIE_SAME_SITE,
-  secure: env.COOKIE_SECURE,
-  domain: env.COOKIE_DOMAIN,
-  path: '/',
-  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-};

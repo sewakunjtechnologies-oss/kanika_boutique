@@ -2,6 +2,7 @@ import { env } from './env';
 
 // The production dashboard origin is always allowed, even if env is misconfigured.
 const PROD_DASHBOARD_ORIGIN = 'https://kanika-boutique-dashboard.vercel.app';
+const FUTURE_CUSTOM_DASHBOARD_ORIGIN = 'https://dashboard.kanikaboutique.com';
 
 /** Trim whitespace and strip trailing slashes so "https://x/" and "https://x" compare equal. */
 export function normalizeOrigin(value: string): string {
@@ -22,6 +23,7 @@ export function buildAllowedOrigins(): string[] {
   raw.push(env.PUBLIC_DASHBOARD_URL);
   if (env.NODE_ENV === 'production') {
     raw.push(PROD_DASHBOARD_ORIGIN);
+    raw.push(FUTURE_CUSTOM_DASHBOARD_ORIGIN);
   } else {
     raw.push('http://localhost:3000', 'http://localhost:3030');
   }

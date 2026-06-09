@@ -8,11 +8,10 @@ if (process.env.NODE_ENV === 'production' && configuredBackendUrl && isLocalhost
   throw new Error('NEXT_PUBLIC_BACKEND_URL must not point to localhost in production');
 }
 
-// REST + media requests use SAME-ORIGIN relative paths ("" base). next.config rewrites
-// proxy /api/* and /uploads/* to the backend, so the browser only talks to this origin
-// and the session cookie stays first-party (required for iOS Safari, which blocks
-// third-party cookies). The empty base makes fetch("/api/...") hit this origin.
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ? new URL(process.env.NEXT_PUBLIC_BACKEND_URL).origin : '';
+// REST + media requests use SAME-ORIGIN relative paths. next.config rewrites
+// proxy /api/* and /uploads/* to the backend, so Safari stores the session
+// cookie as first-party on the dashboard origin instead of third-party on Render.
+const BACKEND_URL = '';
 
 // Absolute backend origin, used only for the direct Socket.IO connection (WebSockets
 // can't be proxied through Vercel rewrites).
