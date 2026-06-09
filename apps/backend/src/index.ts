@@ -30,10 +30,56 @@ import { closeSocketIO, initSocketIO } from './realtime/io';
 
 const app = express();
 const server = http.createServer(app);
-const dashboardOrigins =
-  env.NODE_ENV === 'production'
-    ? [env.PUBLIC_DASHBOARD_URL]
-    : [env.PUBLIC_DASHBOARD_URL, 'http://localhost:3000', 'http://localhost:3030'];
+
+// ===== CORS configuration =====
+// Allowed origins are collected from env (CORS_ORIGIN, CORS_ORIGINS comma-separated,
+// DASHBOARD_URL, and the existing PUBLIC_DASHBOARD_URL), normalized (trimmed + trailing
+// slash removed so "https://x/" and "https://x" match), de-duplicated, and the
+// production dashboard origin is always included. One shared corsOptions object is
+// reused for the global middleware and the explicit preflight handler so OPTIONS and
+// real requests behave identically.
+const PROD_DASHBOARD_ORIGIN = 'https://kanika-boutique-dashboard.vercel.app';
+
+function normalizeOrigin(value: string): string {
+  return value.trim().replace(/\/+$/, '');
+}
+
+function buildAllowedOrigins(): string[] {
+  const raw: string[] = [];
+  if (process.env.CORS_ORIGIN) raw.push(process.env.CORS_ORIGIN);
+  if (process.env.CORS_ORIGINS) raw.push(...process.env.CORS_ORIGINS.split(','));
+  if (process.env.DASHBOARD_URL) raw.push(process.env.DASHBOARD_URL);
+  raw.push(env.PUBLIC_DASHBOARD_URL);
+  if (env.NODE_ENV === 'production') {
+    raw.push(PROD_DASHBOARD_ORIGIN);
+  } else {
+    raw.push('http://localhost:3000', 'http://localhost:3030');
+  }
+  return Array.from(new Set(raw.map(normalizeOrigin).filter((o) => o.length > 0)));
+}
+
+const allowedOrigins = buildAllowedOrigins();
+logger.info({ allowedOrigins }, `Allowed CORS origins: ${JSON.stringify(allowedOrigins)}`);
+
+const corsOptions: cors.CorsOptions = {
+  origin(origin, callback) {
+    // No Origin header → non-browser client (curl, health checks, server-to-server). Allow.
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    if (allowedOrigins.includes(normalizeOrigin(origin))) {
+      // Reflects the request origin (never "*"), required when credentials are enabled.
+      callback(null, true);
+      return;
+    }
+    logger.warn({ origin }, `CORS blocked origin: ${origin}`);
+    callback(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
 
 // ===== Security headers =====
 app.use(
@@ -43,13 +89,9 @@ app.use(
   }),
 );
 
-// ===== CORS for dashboard =====
-app.use(
-  cors({
-    origin: dashboardOrigins,
-    credentials: true,
-  }),
-);
+// ===== CORS for dashboard (registered before all routes) =====
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // shared options → preflight returns the same ACAO header
 
 // ===== Logging =====
 app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/health' } }));
