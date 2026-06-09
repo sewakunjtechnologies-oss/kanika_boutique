@@ -35,6 +35,7 @@ export interface ProductDraft {
   categoryId: string;
   basePrice: string;
   imageUrl: string;
+  imagePublicId: string;
   isActive: boolean;
   variants: VariantDraft[];
 }
@@ -56,6 +57,7 @@ export function ProductForm({
     categoryId: initial?.categoryId ?? '',
     basePrice: initial?.basePrice ?? '',
     imageUrl: initial?.imageUrl ?? '',
+    imagePublicId: initial?.imagePublicId ?? '',
     isActive: initial?.isActive ?? true,
     variants: dynamicSizeVariants(initial?.variants),
   });
@@ -175,13 +177,15 @@ export function ProductForm({
       // product with the returned URL. Surfacing upload errors here avoids the misleading
       // "Product photo is required" when the real failure was the upload.
       let imageUrl = draft.imageUrl;
+      let imagePublicId = draft.imagePublicId;
       if (photoFile) {
         const uploaded = await api.uploadProductImage(photoFile);
         imageUrl = uploaded.url;
+        imagePublicId = uploaded.publicId ?? '';
       }
       // SKU has no input field anymore; auto-generate one for new products so the
       // backend's required unique sku is satisfied. Existing products keep theirs.
-      await onSubmit({ ...draft, imageUrl, sku: draft.sku.trim() || generateSku(draft) });
+      await onSubmit({ ...draft, imageUrl, imagePublicId, sku: draft.sku.trim() || generateSku(draft) });
     } catch (err) {
       toast.error(`Save failed: ${err instanceof Error ? err.message : 'unknown'}`);
     } finally {

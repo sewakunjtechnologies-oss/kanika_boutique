@@ -4,6 +4,9 @@ import { prisma, Prisma, StockMovementType } from '@kda/db';
 import { requireAuth, requireOwner } from '../auth/middleware';
 import { emitToDashboard } from '../realtime/io';
 import { getStockMovementsForVariant, recordStockMovement } from '../chatbot/orderService';
+import { env } from '../config/env';
+import { deleteImage } from '../storage/cloudinary';
+import { logger } from '../logger';
 
 export const productsRouter = Router();
 
@@ -29,6 +32,7 @@ const CreateProductSchema = z.object({
   categoryId: z.string().nullable().optional(),
   basePrice: z.number().positive(),
   imageUrl: z.string().min(1),
+  imagePublicId: z.string().optional(),
   isActive: z.boolean().default(true),
   variants: z.array(VariantInput).default([]),
 });
@@ -188,10 +192,23 @@ productsRouter.put('/products/:id', requireOwner, async (req: Request, res: Resp
   if (parsed.data.basePrice !== undefined) {
     data.basePrice = new Prisma.Decimal(parsed.data.basePrice);
   }
+  // Capture the current Cloudinary asset so we can delete it if the photo is replaced.
+  const before = await prisma.product.findUnique({
+    where: { id: (req.params.id as string) },
+    select: { imagePublicId: true },
+  });
   const product = await prisma.product.update({
     where: { id: (req.params.id as string) },
     data,
   });
+  // Replaced photo → remove the old remote asset (best-effort; never blocks the response).
+  if (
+    parsed.data.imagePublicId &&
+    before?.imagePublicId &&
+    before.imagePublicId !== parsed.data.imagePublicId
+  ) {
+    await safeDeleteImage(before.imagePublicId);
+  }
   emitToDashboard('inventory_changed', { productId: product.id });
   res.json({ productId: product.id });
 });
@@ -206,9 +223,13 @@ productsRouter.delete('/products/:id', requireOwner, async (req: Request, res: R
   const hard = req.query.hard === 'true';
 
   if (hard) {
+    // Capture the Cloudinary asset before the row is gone; only delete it on a real hard
+    // delete (soft delete/deactivation keeps the product and its image).
+    const existing = await prisma.product.findUnique({ where: { id }, select: { imagePublicId: true } });
     try {
       // Schema cascades variants on product delete, but OrderItem→variant is Restrict.
       await prisma.product.delete({ where: { id } });
+      if (existing?.imagePublicId) await safeDeleteImage(existing.imagePublicId);
       emitToDashboard('inventory_changed', { productId: id, deleted: 'hard' });
       res.json({ ok: true, mode: 'hard' });
       return;
@@ -384,6 +405,19 @@ productsRouter.delete('/variants/:id', requireOwner, async (req: Request, res: R
 
 function defaultProductName(sku: string, category: string): string {
   return `${category} ${sku}`.trim();
+}
+
+/**
+ * Delete a Cloudinary asset, but only when Cloudinary is the active provider, and never
+ * let a cleanup failure break the request — orphaned assets are preferable to 500s.
+ */
+async function safeDeleteImage(publicId: string): Promise<void> {
+  if (env.UPLOAD_PROVIDER !== 'cloudinary') return;
+  try {
+    await deleteImage(publicId);
+  } catch (err) {
+    logger.warn({ err, publicId }, 'cloudinary asset delete failed (left orphaned)');
+  }
 }
 
 async function resolveCategoryName(

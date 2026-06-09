@@ -61,6 +61,14 @@ const envSchema = z.object({
   SUPPORT_NUDGE_DELAY_MINUTES: z.coerce.number().int().positive().default(3),
   SUPPORT_PHONE_NUMBER: z.string().default(''),
 
+  // Product image storage. 'local' writes to UPLOADS_DIR/disk; 'cloudinary' uploads to
+  // Cloudinary (recommended in production — survives deploys, offloads bandwidth).
+  // WhatsApp media always stays on local storage regardless of this setting.
+  UPLOAD_PROVIDER: z.enum(['local', 'cloudinary']).default('local'),
+  CLOUDINARY_CLOUD_NAME: z.string().default(''),
+  CLOUDINARY_API_KEY: z.string().default(''),
+  CLOUDINARY_API_SECRET: z.string().default(''),
+
   // Printing. Manual mode always generates PDFs. PrintNode can be enabled later.
   PRINT_PROVIDER: z.enum(['manual', 'printnode']).default('manual'),
   PRINTNODE_API_KEY: z.string().default(''),
@@ -166,6 +174,14 @@ if (parsed.data.NODE_ENV === 'production') {
       'COOKIE_SAME_SITE',
       'must be none when backend and dashboard are on different site domains',
     );
+  }
+}
+
+// Cloudinary requires its three credentials whenever it is the selected provider,
+// in any environment — you cannot upload without them.
+if (parsed.data.UPLOAD_PROVIDER === 'cloudinary') {
+  for (const key of ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'] as const) {
+    if (!cleaned[key]) addProductionError(key, 'is required when UPLOAD_PROVIDER=cloudinary');
   }
 }
 

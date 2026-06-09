@@ -107,6 +107,9 @@ model Product {
   categoryId  String?
   basePrice   Decimal  @db.Decimal(10, 2)
   imageUrl    String
+  // Cloudinary public_id for the product photo, used to replace/delete the remote asset.
+  // Nullable so products created before Cloudinary (or with local images) keep working.
+  imagePublicId String?
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

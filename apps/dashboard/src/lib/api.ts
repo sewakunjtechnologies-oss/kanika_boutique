@@ -50,7 +50,7 @@ export const api = {
     request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 
-  uploadProductImage: async (file: File): Promise<{ url: string; path: string }> => {
+  uploadProductImage: async (file: File): Promise<{ url: string; publicId?: string; path: string }> => {
     const fd = new FormData();
     // Field name "photo" must match the backend's upload.single('photo'). Do NOT set a
     // Content-Type header — the browser sets multipart/form-data with the boundary.

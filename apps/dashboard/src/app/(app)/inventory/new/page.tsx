@@ -21,6 +21,7 @@ export default function NewProductPage(): React.ReactElement {
             categoryId: draft.categoryId || null,
             basePrice: Number(draft.basePrice),
             imageUrl: draft.imageUrl,
+            imagePublicId: draft.imagePublicId || undefined,
             isActive: draft.isActive,
             variants: draft.variants
               .filter((v) => v.size)

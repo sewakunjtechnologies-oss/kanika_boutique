@@ -17,6 +17,7 @@ interface ProductDetail {
   categoryId: string | null;
   basePrice: string;
   imageUrl: string;
+  imagePublicId: string | null;
   isActive: boolean;
   variants: {
     id: string;
@@ -136,6 +137,7 @@ export default function EditProductPage(): React.ReactElement {
           categoryId: product.categoryId ?? '',
           basePrice: product.basePrice,
           imageUrl: product.imageUrl,
+          imagePublicId: product.imagePublicId ?? '',
           isActive: product.isActive,
           variants: product.variants.map((v) => ({
             id: v.id,
@@ -155,6 +157,7 @@ export default function EditProductPage(): React.ReactElement {
             categoryId: draft.categoryId || null,
             basePrice: Number(draft.basePrice),
             imageUrl: draft.imageUrl,
+            imagePublicId: draft.imagePublicId || undefined,
             isActive: draft.isActive,
           });
           // 2) Sync variants (add new, update existing, delete removed).
