@@ -10,6 +10,8 @@ import {
   destroySession,
   getClearSessionCookieOptions,
   regenerateSession,
+  saveSession,
+  SESSION_TTL_SECONDS,
 } from '../auth/session';
 
 export const authRouter = Router();
@@ -42,12 +44,26 @@ authRouter.post('/auth/login', async (req: Request, res: Response): Promise<void
   }
 
   await regenerateSession(req);
+  const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000);
+  req.session.cookie.maxAge = SESSION_TTL_SECONDS * 1000;
   req.session.userId = user.id;
   req.session.email = user.email;
   req.session.role = user.role;
   req.session.createdAt = new Date().toISOString();
+  req.session.expiresAt = expiresAt.toISOString();
 
-  logger.info({ userId: user.id, email: user.email }, 'login success: server session created');
+  try {
+    await saveSession(req);
+  } catch (err) {
+    logger.error({ err, userId: user.id }, 'session save failed after login');
+    res.status(500).json({ error: 'session_save_failed' });
+    return;
+  }
+
+  logger.info(
+    { userId: user.id, email: user.email, ttlDays: 7 },
+    'Session created for user, expires in 7 days',
+  );
   res.json({
     authenticated: true,
     user: { id: user.id, email: user.email, name: user.name, role: user.role },
@@ -71,9 +87,21 @@ authRouter.get('/auth/socket-token', requireAuth, (req: Request, res: Response):
   res.json({ token });
 });
 
-authRouter.get('/auth/me', requireAuth, async (req: Request, res: Response): Promise<void> => {
-  const user = req.user;
+authRouter.get('/auth/me', async (req: Request, res: Response): Promise<void> => {
+  const userId = req.session?.userId;
+  logger.debug({ sessionExists: Boolean(userId) }, '/me session exists');
+  if (!userId) {
+    res.status(401).json({ authenticated: false });
+    return;
+  }
+
+  const user = await prisma.adminUser.findUnique({
+    where: { id: userId },
+    select: { id: true, email: true, name: true, role: true },
+  });
   if (!user) {
+    await destroySession(req);
+    res.clearCookie(DASHBOARD_SESSION_COOKIE_NAME, getClearSessionCookieOptions());
     res.status(401).json({ authenticated: false });
     return;
   }

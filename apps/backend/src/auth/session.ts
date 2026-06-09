@@ -1,5 +1,5 @@
 import session, { type SessionData } from 'express-session';
-import type { CookieOptions as ExpressCookieOptions, Request } from 'express';
+import type { CookieOptions as ExpressCookieOptions, NextFunction, Request, Response } from 'express';
 import type { AdminRole } from '@kda/db';
 import { prisma } from '@kda/db';
 import { env } from '../config/env';
@@ -8,6 +8,7 @@ import { redisConnection } from '../queues/connection';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const SESSION_TTL_MS = env.SESSION_COOKIE_MAX_AGE_DAYS * MS_PER_DAY;
+export const SESSION_TTL_SECONDS = Math.floor(SESSION_TTL_MS / 1000);
 const REDIS_PREFIX = 'kda:sess:';
 
 declare module 'express-session' {
@@ -16,6 +17,7 @@ declare module 'express-session' {
     email?: string;
     role?: AdminRole;
     createdAt?: string;
+    expiresAt?: string;
   }
 }
 
@@ -45,6 +47,27 @@ export function getSessionCookieOptions(): session.CookieOptions {
   };
 }
 
+export function ensurePersistentSessionCookieHeader(
+  _req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const originalSetHeader = res.setHeader.bind(res);
+  res.setHeader = (name: string, value: number | string | readonly string[]) => {
+    if (name.toLowerCase() === 'set-cookie') {
+      return originalSetHeader(name, addSessionCookieMaxAge(value));
+    }
+    return originalSetHeader(name, value);
+  };
+  next();
+}
+
+export function addSessionCookieMaxAge(value: number | string | readonly string[]): number | string | readonly string[] {
+  if (typeof value === 'string') return addMaxAgeToCookie(value);
+  if (Array.isArray(value)) return value.map(addMaxAgeToCookie);
+  return value;
+}
+
 export function getClearSessionCookieOptions(): ExpressCookieOptions {
   return {
     httpOnly: true,
@@ -58,6 +81,12 @@ export function getClearSessionCookieOptions(): ExpressCookieOptions {
 export function regenerateSession(req: Request): Promise<void> {
   return new Promise((resolve, reject) => {
     req.session.regenerate((err) => (err ? reject(err) : resolve()));
+  });
+}
+
+export function saveSession(req: Request): Promise<void> {
+  return new Promise((resolve, reject) => {
+    req.session.save((err) => (err ? reject(err) : resolve()));
   });
 }
 
@@ -191,6 +220,10 @@ function redisKey(sid: string): string {
 }
 
 function sessionExpiresAt(sess: SessionData): Date {
+  if (sess.expiresAt) {
+    const parsed = new Date(sess.expiresAt);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
   const expires = sess.cookie?.expires;
   if (expires instanceof Date) return expires;
   if (typeof expires === 'string') {
@@ -198,6 +231,12 @@ function sessionExpiresAt(sess: SessionData): Date {
     if (!Number.isNaN(parsed.getTime())) return parsed;
   }
   return new Date(Date.now() + SESSION_TTL_MS);
+}
+
+function addMaxAgeToCookie(cookie: string): string {
+  if (!cookie.startsWith(`${DASHBOARD_SESSION_COOKIE_NAME}=`)) return cookie;
+  if (/;\s*Max-Age=/i.test(cookie)) return cookie;
+  return cookie.replace(/;\s*Expires=/i, `; Max-Age=${SESSION_TTL_SECONDS}; Expires=`);
 }
 
 function isPrismaNotFound(err: unknown): boolean {

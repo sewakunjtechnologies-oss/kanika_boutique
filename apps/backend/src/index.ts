@@ -8,7 +8,7 @@ import pinoHttp from 'pino-http';
 import { env, logMetaWarnings } from './config/env';
 import { allowedOrigins, normalizeOrigin } from './config/cors';
 import { logger } from './logger';
-import { createDashboardSessionMiddleware } from './auth/session';
+import { createDashboardSessionMiddleware, ensurePersistentSessionCookieHeader } from './auth/session';
 import { prisma } from '@kda/db';
 import { webhookRouter } from './routes/webhook';
 import { authRouter } from './routes/auth';
@@ -81,6 +81,7 @@ app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/health'
 
 // ===== Cookies =====
 app.use(cookieParser());
+app.use(ensurePersistentSessionCookieHeader);
 app.use(createDashboardSessionMiddleware());
 
 // ===== Body parsing — capture rawBody for webhook signature verification =====
