@@ -177,11 +177,17 @@ if (parsed.data.NODE_ENV === 'production') {
   }
 }
 
-// Cloudinary requires its three credentials whenever it is the selected provider,
-// in any environment — you cannot upload without them.
-if (parsed.data.UPLOAD_PROVIDER === 'cloudinary') {
-  for (const key of ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'] as const) {
-    if (!cleaned[key]) addProductionError(key, 'is required when UPLOAD_PROVIDER=cloudinary');
+// Cloudinary credentials are required whenever it is the selected provider OR we are in
+// production (product images must not fall back to the ephemeral disk on Render). Fail
+// fast at startup with a clear message rather than 500-ing on the first upload.
+if (parsed.data.UPLOAD_PROVIDER === 'cloudinary' || parsed.data.NODE_ENV === 'production') {
+  const missing = (['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'] as const).filter(
+    (key) => !cleaned[key],
+  );
+  if (missing.length > 0) {
+    // eslint-disable-next-line no-console
+    console.error(`Cloudinary env vars missing: ${missing.join(', ')}`);
+    process.exit(1);
   }
 }
 
