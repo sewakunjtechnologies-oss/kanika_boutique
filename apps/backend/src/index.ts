@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import pinoHttp from 'pino-http';
 import { env, logMetaWarnings } from './config/env';
+import { allowedOrigins, normalizeOrigin } from './config/cors';
 import { logger } from './logger';
 import { prisma } from '@kda/db';
 import { webhookRouter } from './routes/webhook';
@@ -32,33 +33,13 @@ const app = express();
 const server = http.createServer(app);
 
 // ===== CORS configuration =====
-// Allowed origins are collected from env (CORS_ORIGIN, CORS_ORIGINS comma-separated,
-// DASHBOARD_URL, and the existing PUBLIC_DASHBOARD_URL), normalized (trimmed + trailing
-// slash removed so "https://x/" and "https://x" match), de-duplicated, and the
-// production dashboard origin is always included. One shared corsOptions object is
-// reused for the global middleware and the explicit preflight handler so OPTIONS and
-// real requests behave identically.
-const PROD_DASHBOARD_ORIGIN = 'https://kanika-boutique-dashboard.vercel.app';
-
-function normalizeOrigin(value: string): string {
-  return value.trim().replace(/\/+$/, '');
-}
-
-function buildAllowedOrigins(): string[] {
-  const raw: string[] = [];
-  if (process.env.CORS_ORIGIN) raw.push(process.env.CORS_ORIGIN);
-  if (process.env.CORS_ORIGINS) raw.push(...process.env.CORS_ORIGINS.split(','));
-  if (process.env.DASHBOARD_URL) raw.push(process.env.DASHBOARD_URL);
-  raw.push(env.PUBLIC_DASHBOARD_URL);
-  if (env.NODE_ENV === 'production') {
-    raw.push(PROD_DASHBOARD_ORIGIN);
-  } else {
-    raw.push('http://localhost:3000', 'http://localhost:3030');
-  }
-  return Array.from(new Set(raw.map(normalizeOrigin).filter((o) => o.length > 0)));
-}
-
-const allowedOrigins = buildAllowedOrigins();
+// allowedOrigins (shared with the Socket.IO server) is normalized + de-duplicated from
+// env and always includes the production dashboard origin. One shared corsOptions object
+// is reused for the global middleware and the explicit preflight handler so OPTIONS and
+// real requests behave identically. Note: in production the dashboard proxies /api/* to
+// this backend (Next.js rewrites), so most browser traffic is same-origin and never
+// triggers CORS — this allow-list mainly governs the direct Socket.IO connection and any
+// direct API calls.
 logger.info({ allowedOrigins }, `Allowed CORS origins: ${JSON.stringify(allowedOrigins)}`);
 
 const corsOptions: cors.CorsOptions = {

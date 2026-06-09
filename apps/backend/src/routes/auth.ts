@@ -43,8 +43,21 @@ authRouter.post('/auth/login', async (req: Request, res: Response): Promise<void
 });
 
 authRouter.post('/auth/logout', (req: Request, res: Response): void => {
+  // Clear with the same attributes (sameSite/secure/domain/path) the cookie was set with,
+  // otherwise the browser keeps the original cookie.
   res.clearCookie(SESSION_COOKIE_NAME, { ...SESSION_COOKIE_OPTIONS, maxAge: undefined });
+  logger.info({ userId: req.auth?.sub ?? null }, 'logout: session cookie cleared');
   res.json({ ok: true });
+});
+
+// Short-lived token for the Socket.IO handshake. The dashboard fetches this over the
+// first-party proxied API (so the session cookie is sent even on iOS Safari), then
+// connects to the socket cross-site using the token instead of the cookie.
+authRouter.get('/auth/socket-token', requireAuth, (req: Request, res: Response): void => {
+  const { sub, email, role } = req.auth!;
+  const token = signAuthToken({ sub, email, role });
+  logger.info({ userId: sub }, 'socket-token issued');
+  res.json({ token });
 });
 
 authRouter.get('/auth/me', requireAuth, async (req: Request, res: Response): Promise<void> => {

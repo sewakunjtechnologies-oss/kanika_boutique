@@ -1,7 +1,7 @@
 import { Server, type Socket } from 'socket.io';
 import type http from 'node:http';
 import { logger } from '../logger';
-import { env } from '../config/env';
+import { allowedOrigins } from '../config/cors';
 import { verifyAuthToken } from '../auth/jwt';
 
 export const DASHBOARD_NAMESPACE = '/dashboard';
@@ -18,14 +18,12 @@ export type DashboardEvent =
 let io: Server | null = null;
 
 export function initSocketIO(httpServer: http.Server): Server {
-  const dashboardOrigins =
-    env.NODE_ENV === 'production'
-      ? [env.PUBLIC_DASHBOARD_URL]
-      : [env.PUBLIC_DASHBOARD_URL, 'http://localhost:3000', 'http://localhost:3030'];
-
+  // Shared allow-list with the REST API. The dashboard connects to this socket directly
+  // (cross-site, since Vercel can't proxy WebSockets), authenticating with a handshake
+  // token rather than the cookie — iOS Safari won't send a third-party cookie.
   io = new Server(httpServer, {
     cors: {
-      origin: dashboardOrigins,
+      origin: allowedOrigins,
       credentials: true,
     },
     transports: ['websocket', 'polling'],
