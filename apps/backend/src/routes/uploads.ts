@@ -21,10 +21,15 @@ const upload = multer({
 uploadsRouter.post(
   '/uploads/products',
   requireAuth,
-  upload.single('file'),
+  upload.single('photo'),
   async (req: Request, res: Response): Promise<void> => {
+    // Temporary debug — remove after verifying. Logs only the filename, no secrets.
+    // eslint-disable-next-line no-console
+    console.log('uploaded file', req.file?.originalname);
     if (!req.file) {
-      res.status(400).json({ error: 'no_file' });
+      // Only a genuinely missing file reaches here (a wrong field name throws a Multer
+      // "Unexpected field" error before this handler runs).
+      res.status(400).json({ error: 'no_file', message: 'Photo file is required (field "photo").' });
       return;
     }
     const ext = path.extname(req.file.originalname).toLowerCase() || guessExt(req.file.mimetype);

@@ -52,7 +52,9 @@ export const api = {
 
   uploadProductImage: async (file: File): Promise<{ url: string; path: string }> => {
     const fd = new FormData();
-    fd.append('file', file);
+    // Field name "photo" must match the backend's upload.single('photo'). Do NOT set a
+    // Content-Type header — the browser sets multipart/form-data with the boundary.
+    fd.append('photo', file);
     const res = await fetch(`${BACKEND_URL}/api/uploads/products`, {
       method: 'POST',
       body: fd,

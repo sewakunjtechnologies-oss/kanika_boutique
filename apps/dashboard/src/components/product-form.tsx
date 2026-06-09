@@ -62,6 +62,11 @@ export function ProductForm({
   const [saving, setSaving] = useState(false);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [newCategoryName, setNewCategoryName] = useState('');
+  // The selected photo is held as a File and uploaded on submit (not on select), so the
+  // create is atomic: no orphaned uploads, no race where "Create" is clicked before an
+  // on-select upload finishes. photoPreview is a local object URL for instant preview.
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
 
   useEffect(() => {
     if (initial) {
@@ -95,14 +100,19 @@ export function ProductForm({
     void loadCategories();
   }, []);
 
-  async function uploadImage(file: File): Promise<void> {
-    try {
-      const r = await api.uploadProductImage(file);
-      setDraft((d) => ({ ...d, imageUrl: r.url }));
-      toast.success('Image uploaded');
-    } catch {
-      toast.error('Image upload failed');
-    }
+  // Revoke the previous object URL when the preview changes or the form unmounts.
+  useEffect(() => {
+    return () => {
+      if (photoPreview) URL.revokeObjectURL(photoPreview);
+    };
+  }, [photoPreview]);
+
+  function onSelectPhoto(file: File): void {
+    // Temporary debug — remove after verifying. Logs only file metadata, no secrets.
+    // eslint-disable-next-line no-console
+    console.log('selected photo', file.name, file.type, file.size);
+    setPhotoFile(file);
+    setPhotoPreview(URL.createObjectURL(file));
   }
 
   function updateVariant(idx: number, patch: Partial<VariantDraft>): void {
@@ -154,15 +164,24 @@ export function ProductForm({
       toast.error('Price is required');
       return;
     }
-    if (!draft.imageUrl.trim()) {
+    // Valid when a new photo is selected, or an existing image is already set (edit).
+    if (!photoFile && !draft.imageUrl.trim()) {
       toast.error('Product photo is required');
       return;
     }
     setSaving(true);
     try {
+      // Upload the selected photo now (multipart, field "photo"), then create/update the
+      // product with the returned URL. Surfacing upload errors here avoids the misleading
+      // "Product photo is required" when the real failure was the upload.
+      let imageUrl = draft.imageUrl;
+      if (photoFile) {
+        const uploaded = await api.uploadProductImage(photoFile);
+        imageUrl = uploaded.url;
+      }
       // SKU has no input field anymore; auto-generate one for new products so the
       // backend's required unique sku is satisfied. Existing products keep theirs.
-      await onSubmit({ ...draft, sku: draft.sku.trim() || generateSku(draft) });
+      await onSubmit({ ...draft, imageUrl, sku: draft.sku.trim() || generateSku(draft) });
     } catch (err) {
       toast.error(`Save failed: ${err instanceof Error ? err.message : 'unknown'}`);
     } finally {
@@ -230,13 +249,14 @@ export function ProductForm({
           </div>
           <Field label="Product photo">
             <div className="flex items-center gap-4">
-              {draft.imageUrl && (
+              {(photoPreview || draft.imageUrl) && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={
-                    draft.imageUrl.startsWith('http')
+                    photoPreview ??
+                    (draft.imageUrl.startsWith('http')
                       ? draft.imageUrl
-                      : `${BACKEND_BASE_URL}${draft.imageUrl}`
+                      : `${BACKEND_BASE_URL}${draft.imageUrl}`)
                   }
                   alt="preview"
                   className="w-24 h-24 rounded object-cover border"
@@ -245,7 +265,10 @@ export function ProductForm({
               <Input
                 type="file"
                 accept="image/*"
-                onChange={(e) => e.target.files?.[0] && void uploadImage(e.target.files[0])}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) onSelectPhoto(file);
+                }}
               />
             </div>
           </Field>
