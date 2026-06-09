@@ -15,7 +15,8 @@
     "sample": "ts-node-dev --transpile-only --no-notify --quiet scripts/sendWebhookSample.ts",
     "send-test": "ts-node-dev --transpile-only --no-notify --quiet scripts/sendTest.ts",
     "testai": "ts-node-dev --transpile-only --no-notify --quiet scripts/testAi.ts",
-    "qa:bot": "ts-node-dev --transpile-only --no-notify --quiet scripts/qaSmoke.ts"
+    "qa:bot": "ts-node-dev --transpile-only --no-notify --quiet scripts/qaSmoke.ts",
+    "cloudinary:check": "ts-node-dev --transpile-only --no-notify --quiet scripts/cloudinaryCheck.ts"
   },
   "dependencies": {
     "@google/genai": "^1.5.1",
