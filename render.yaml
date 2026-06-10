@@ -103,6 +103,10 @@ services:
         value: "false"
       - key: CHATBOT_ENABLE_AI_IMAGE_MATCHING
         value: "false"
+      - key: IMAGE_MATCH_MIN_CONFIDENCE
+        value: "0.78"
+      - key: REPLY_ON_UNMATCHED_IMAGE
+        value: "false"
 
       # ---- Chatbot / orders behavior ----
       - key: ORDER_RESERVATION_MINUTES

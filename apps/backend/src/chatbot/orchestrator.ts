@@ -14,7 +14,6 @@ import { isTakeoverActive } from '../whatsapp/conversations';
 import { storage } from '../storage';
 import { env } from '../config/env';
 import {
-  CHECKING_PRODUCT_MESSAGE,
   isAmbiguousCancelIntent,
   isDirectCancelIntent,
   isProductChangeIntent,
@@ -770,8 +769,9 @@ async function resolveTakeoverForTrigger(
   }
 
   if (event.type === 'IMAGE') {
-    // Release takeover first so the immediate ack + availability replies are
-    // not suppressed by the takeover send-guard.
+    // Release takeover first so any availability reply is not suppressed by the
+    // takeover send-guard. The photo is still processed silently — we only
+    // reply on a high-confidence inventory match.
     await prisma.conversation.update({
       where: { id: conv.id },
       data: {
@@ -780,16 +780,12 @@ async function resolveTakeoverForTrigger(
         intent: Intent.ORDER_INTENT,
       },
     });
-    await sendCheckingProductAck(input.customerWhatsappNumber);
-    const outcome = await runProductMatchOutcome(event.mediaId);
     botLog('INTENT_DETECTED', {
       conversationId: conv.id,
       intent: Intent.ORDER_INTENT,
       source: 'takeover_release_photo_match',
-      productId: outcome?.matchedProductId ?? null,
-      confidence: outcome?.confidence ?? 0,
     });
-    await respondToProductMatchOutcome(input, outcome, extractRequestedSize(event.caption ?? ''), event.mediaId);
+    await processInboundProductImage(input, event.mediaId, extractRequestedSize(event.caption ?? ''));
     return 'handled';
   }
 
@@ -922,8 +918,7 @@ async function executeActions(
           break;
 
         case 'RUN_PRODUCT_MATCH': {
-          const outcome = await runProductMatchOutcome(action.mediaId);
-          await respondToProductMatchOutcome(input, outcome, null, action.mediaId);
+          await processInboundProductImage(input, action.mediaId, null);
           const updated = await prisma.conversation.findUnique({
             where: { id: conv.id },
             select: { state: true, contextJson: true },
@@ -1161,9 +1156,7 @@ async function notifyAdminsOfPendingPayment(
 
 async function handleIdleCatalogInquiry(input: OrchestratorInput, event: ChatEvent): Promise<boolean> {
   if (event.type === 'IMAGE') {
-    await sendCheckingProductAck(input.customerWhatsappNumber);
-    const outcome = await runProductMatchOutcome(event.mediaId);
-    await respondToProductMatchOutcome(input, outcome, extractRequestedSize(event.caption ?? ''), event.mediaId);
+    await processInboundProductImage(input, event.mediaId, extractRequestedSize(event.caption ?? ''));
     return true;
   }
 
@@ -1564,101 +1557,57 @@ async function respondToProductMatchOutcome(
   requestedSize: string | null,
   sourceMediaId: string | null = null,
 ): Promise<void> {
-  if (!outcome || outcome.confidenceBand === 'low' || outcome.candidates.length === 0) {
+  const threshold = env.IMAGE_MATCH_MIN_CONFIDENCE;
+  const score = outcome?.confidence ?? 0;
+  const matchedProductId = outcome?.matchedProductId ?? null;
+  logger.info(
+    {
+      conversationId: input.conversationId,
+      score,
+      threshold,
+      band: outcome?.confidenceBand ?? 'none',
+      matchedProductId,
+    },
+    'inventory match score',
+  );
+
+  // Accept ONLY a confident single match. Higher score = better match; anything
+  // below the configured threshold is treated as no match.
+  if (matchedProductId && score >= threshold) {
     logger.info(
-      {
-        conversationId: input.conversationId,
-        confidence: outcome?.confidence ?? 0,
-        reason: outcome?.reasoning ?? 'matcher_failed',
-      },
-      'image match low confidence — asking customer for clearer reference',
+      { conversationId: input.conversationId, productId: matchedProductId, score },
+      'inventory match accepted',
     );
+    await beginOrderFromProduct(
+      input,
+      matchedProductId,
+      requestedSize,
+      sourceMediaId ? { lastMatchedImageMediaId: sourceMediaId } : {},
+    );
+    return;
+  }
+
+  // Below threshold / no match: stay silent by default. Log internally and
+  // record a dashboard event so the owner can review ignored photos later.
+  logger.info(
+    { conversationId: input.conversationId, score, threshold, reason: outcome?.reasoning ?? 'matcher_failed' },
+    'inventory match rejected',
+  );
+  logger.info(
+    { conversationId: input.conversationId, senderLast4: last4(input.customerWhatsappNumber), score },
+    'image ignored: no inventory match',
+  );
+  emitToDashboard('image_unmatched', {
+    conversationId: input.conversationId,
+    score,
+    hasCandidate: Boolean(matchedProductId),
+  });
+
+  if (env.REPLY_ON_UNMATCHED_IMAGE) {
     await requestClearerProductReference(input, outcome?.candidates ?? []);
     return;
   }
-
-  if (outcome.confidenceBand === 'high' && outcome.matchedProductId) {
-    await askMatchedProductConfirmation(input, outcome.matchedProductId, requestedSize, outcome.confidence, sourceMediaId);
-    return;
-  }
-
-  await askCustomerToChooseProduct(input, outcome.candidates, sourceMediaId);
-}
-
-async function askMatchedProductConfirmation(
-  input: OrchestratorInput,
-  productId: string,
-  requestedSize: string | null,
-  confidence: number,
-  sourceMediaId: string | null,
-): Promise<void> {
-  const availability = await getProductAvailability(productId);
-  if (!availability || !availability.isActive) {
-    await requestClearerProductReference(input);
-    return;
-  }
-
-  const availableSizes = availability.variants.filter((v) => v.stock > 0).map((v) => v.size);
-  await prisma.conversation.update({
-    where: { id: input.conversationId },
-    data: {
-      state: ConversationState.AWAITING_PRODUCT_CONFIRMATION,
-      contextJson: {
-        productId: availability.id,
-        productName: availability.name,
-        productPrice: Number(availability.basePrice),
-        availableSizes,
-        requestedSize,
-        matchConfidence: confidence,
-        ...(sourceMediaId ? { lastMatchedImageMediaId: sourceMediaId } : {}),
-        lastImageUsable: true,
-        awaitingNewProduct: false,
-        productRejected: false,
-      } as never,
-    },
-  });
-
-  await sendInteractiveButtons(
-    input.customerWhatsappNumber,
-    `I found a close match: ${availability.name}\nPrice: ₹${availability.basePrice}\nIs this the product you want?`,
-    [
-      { id: 'product_confirm_yes', title: 'Yes' },
-      { id: 'product_confirm_no', title: 'No' },
-    ],
-  );
-}
-
-async function askCustomerToChooseProduct(
-  input: OrchestratorInput,
-  candidates: ProductMatchCandidate[],
-  sourceMediaId: string | null,
-): Promise<void> {
-  const top = candidates.slice(0, 3);
-  await prisma.conversation.update({
-    where: { id: input.conversationId },
-    data: {
-      state: ConversationState.AWAITING_PRODUCT_CONFIRMATION,
-      contextJson: {
-        candidateProductIds: top.map((candidate) => candidate.productId),
-        matchConfidence: top[0]?.confidence ?? 0,
-        ...(sourceMediaId ? { lastMatchedImageMediaId: sourceMediaId } : {}),
-        lastImageUsable: true,
-        awaitingNewProduct: false,
-        productRejected: false,
-      } as never,
-    },
-  });
-
-  await sendInteractiveList(input.customerWhatsappNumber, 'I found a few possible matches. Please choose the correct product:', 'Choose item', [
-    {
-      title: 'Possible matches',
-      rows: top.map((candidate) => ({
-        id: `match_${candidate.productId}`,
-        title: candidate.name.slice(0, 24),
-        description: `${candidate.sku} | ${Math.round(candidate.confidence * 100)}% match`,
-      })),
-    },
-  ]);
+  await resetConversationToIdle(input.conversationId);
 }
 
 async function requestClearerProductReference(
@@ -1996,20 +1945,49 @@ function sameSize(a: string, b: string): boolean {
 }
 
 /**
- * Send the immediate "Let me check this product for you." acknowledgement the
- * moment a product photo arrives, before the (slower) media download + match.
- * Failure to ack must never block the actual product check, so swallow errors.
+ * True when inventory has at least one active, in-stock product with a
+ * searchable image. If false, a customer photo can never match anything, so we
+ * skip download/matching entirely and stay silent.
  */
-async function sendCheckingProductAck(to: string): Promise<void> {
-  try {
-    await sendText(to, CHECKING_PRODUCT_MESSAGE);
-    logger.info({ recipientLast4: last4(to) }, 'sent let me check reply');
-  } catch (err) {
-    logger.warn(
-      { recipientLast4: last4(to), err: err instanceof Error ? err.message : 'unknown' },
-      'failed to send let-me-check acknowledgement',
+async function hasSearchableInventoryImages(): Promise<boolean> {
+  const count = await prisma.product.count({
+    where: {
+      isActive: true,
+      imageUrl: { not: '' },
+      variants: { some: { isActive: true, stock: { gt: 0 } } },
+    },
+  });
+  return count > 0;
+}
+
+async function resetConversationToIdle(conversationId: string): Promise<void> {
+  await prisma.conversation.update({
+    where: { id: conversationId },
+    data: { state: ConversationState.IDLE, contextJson: {} },
+  });
+}
+
+/**
+ * Unified entry for an inbound customer product photo. Processes the image
+ * silently: guards on inventory, downloads + matches, and only replies on a
+ * high-confidence match (handled inside respondToProductMatchOutcome). Never
+ * throws — the webhook has already returned 200.
+ */
+async function processInboundProductImage(
+  input: OrchestratorInput,
+  mediaId: string,
+  requestedSize: string | null,
+): Promise<void> {
+  if (!(await hasSearchableInventoryImages())) {
+    logger.info(
+      { conversationId: input.conversationId, senderLast4: last4(input.customerWhatsappNumber) },
+      'image ignored: inventory image index empty',
     );
+    await resetConversationToIdle(input.conversationId);
+    return;
   }
+  const outcome = await runProductMatchOutcome(mediaId);
+  await respondToProductMatchOutcome(input, outcome, requestedSize, mediaId);
 }
 
 async function runProductMatchOutcome(mediaId: string): Promise<ProductMatchOutcome | null> {

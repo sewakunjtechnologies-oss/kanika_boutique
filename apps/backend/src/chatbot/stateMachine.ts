@@ -162,9 +162,10 @@ export const PRODUCT_FIRST_MESSAGE =
   "Please send the product photo or article number first, then I'll check availability.";
 
 /**
- * Immediate acknowledgement sent the moment a customer sends a product photo,
- * before we download the media or run inventory matching. Keeps the customer
- * informed while the (slower) match + stock check runs.
+ * Optional acknowledgement for a customer's product photo. NOT sent before
+ * matching anymore — photos are processed silently and we reply only on a
+ * high-confidence inventory match. Kept for opt-in use if a typing/ack reply
+ * is ever desired again.
  */
 export const CHECKING_PRODUCT_MESSAGE = 'Let me check this product for you.';
 
@@ -400,10 +401,9 @@ function handleIdle(event: ChatEvent, _context: OrderContext): TransitionResult 
     return {
       nextState: ConversationState.AWAITING_PRODUCT_CONFIRMATION,
       context: {},
-      actions: [
-        { type: 'SEND_TEXT', body: CHECKING_PRODUCT_MESSAGE },
-        { type: 'RUN_PRODUCT_MATCH', mediaId: event.mediaId },
-      ],
+      // No pre-match acknowledgement: the image is processed silently and we
+      // only reply if it matches inventory with high confidence.
+      actions: [{ type: 'RUN_PRODUCT_MATCH', mediaId: event.mediaId }],
     };
   }
 
@@ -467,10 +467,9 @@ function handleAwaitingNewProduct(event: ChatEvent, context: OrderContext): Tran
         rejectedImageMediaId: context.rejectedImageMediaId,
         lastMatchedImageMediaId: event.mediaId,
       },
-      actions: [
-        { type: 'SEND_TEXT', body: CHECKING_PRODUCT_MESSAGE },
-        { type: 'RUN_PRODUCT_MATCH', mediaId: event.mediaId },
-      ],
+      // No pre-match acknowledgement: process silently, reply only on a
+      // high-confidence inventory match.
+      actions: [{ type: 'RUN_PRODUCT_MATCH', mediaId: event.mediaId }],
     };
   }
 

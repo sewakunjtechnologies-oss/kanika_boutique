@@ -13,7 +13,8 @@ export type DashboardEvent =
   | 'payment_received'
   | 'takeover_changed'
   | 'inventory_changed'
-  | 'support_requested';
+  | 'support_requested'
+  | 'image_unmatched';
 
 let io: Server | null = null;
 

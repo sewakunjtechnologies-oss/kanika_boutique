@@ -57,6 +57,14 @@ const envSchema = z.object({
   // Chatbot behavior.
   CHATBOT_DEBUG: envBool.default(false),
   CHATBOT_ENABLE_AI_IMAGE_MATCHING: envBool.default(false),
+  // Minimum inventory image-match confidence (0..1, higher = better match)
+  // required before the bot replies to a customer's product photo. Matches
+  // below this are silently ignored (logged for review, no customer reply).
+  IMAGE_MATCH_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.78),
+  // When false (default), an unmatched/low-confidence photo gets NO customer
+  // reply — only an internal log + dashboard event. Set true to re-enable the
+  // "send a clearer photo / product code" reply.
+  REPLY_ON_UNMATCHED_IMAGE: envBool.default(false),
   ORDER_RESERVATION_MINUTES: z.coerce.number().int().positive().default(120),
   SUPPORT_NUDGE_DELAY_MINUTES: z.coerce.number().int().positive().default(3),
   SUPPORT_PHONE_NUMBER: z.string().default(''),
