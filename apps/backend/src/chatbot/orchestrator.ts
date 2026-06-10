@@ -14,6 +14,7 @@ import { isTakeoverActive } from '../whatsapp/conversations';
 import { storage } from '../storage';
 import { env } from '../config/env';
 import {
+  CHECKING_PRODUCT_MESSAGE,
   isAmbiguousCancelIntent,
   isDirectCancelIntent,
   isProductChangeIntent,
@@ -168,7 +169,10 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
   });
 
   if (intent !== Intent.ORDER_INTENT) {
-    logger.info({ conversationId: conv.id, intent }, 'Ignored non-intent message');
+    logger.info(
+      { conversationId: conv.id, intent },
+      intent === Intent.PERSONAL_CHAT ? 'ignored casual message' : 'Ignored non-intent message',
+    );
     return;
   }
 
@@ -766,7 +770,8 @@ async function resolveTakeoverForTrigger(
   }
 
   if (event.type === 'IMAGE') {
-    const outcome = await runProductMatchOutcome(event.mediaId);
+    // Release takeover first so the immediate ack + availability replies are
+    // not suppressed by the takeover send-guard.
     await prisma.conversation.update({
       where: { id: conv.id },
       data: {
@@ -775,6 +780,8 @@ async function resolveTakeoverForTrigger(
         intent: Intent.ORDER_INTENT,
       },
     });
+    await sendCheckingProductAck(input.customerWhatsappNumber);
+    const outcome = await runProductMatchOutcome(event.mediaId);
     botLog('INTENT_DETECTED', {
       conversationId: conv.id,
       intent: Intent.ORDER_INTENT,
@@ -1154,6 +1161,7 @@ async function notifyAdminsOfPendingPayment(
 
 async function handleIdleCatalogInquiry(input: OrchestratorInput, event: ChatEvent): Promise<boolean> {
   if (event.type === 'IMAGE') {
+    await sendCheckingProductAck(input.customerWhatsappNumber);
     const outcome = await runProductMatchOutcome(event.mediaId);
     await respondToProductMatchOutcome(input, outcome, extractRequestedSize(event.caption ?? ''), event.mediaId);
     return true;
@@ -1206,6 +1214,7 @@ async function handleIdleCatalogInquiry(input: OrchestratorInput, event: ChatEve
   if (looksLikePhotoFollowUp(text)) {
     const recentMediaId = await findRecentConversationImageMediaId(input.conversationId);
     if (recentMediaId) {
+      logger.info({ conversationId: input.conversationId }, 'using recent image context');
       await sendText(input.customerWhatsappNumber, 'Got it — checking the last photo for availability...');
       const outcome = await runProductMatchOutcome(recentMediaId);
       await respondToProductMatchOutcome(input, outcome, extractRequestedSize(text), recentMediaId);
@@ -1713,6 +1722,15 @@ async function beginOrderFromProduct(
       physicalStock: v.physicalStock,
     })),
   });
+  logger.info(
+    {
+      conversationId: input.conversationId,
+      productId,
+      inStock: availableSizes.length > 0,
+      availableSizes,
+    },
+    'availability reply sent',
+  );
 
   if (availableSizes.length === 0) {
     await sendText(
@@ -1977,6 +1995,23 @@ function sameSize(a: string, b: string): boolean {
   return a.trim().toUpperCase() === b.trim().toUpperCase();
 }
 
+/**
+ * Send the immediate "Let me check this product for you." acknowledgement the
+ * moment a product photo arrives, before the (slower) media download + match.
+ * Failure to ack must never block the actual product check, so swallow errors.
+ */
+async function sendCheckingProductAck(to: string): Promise<void> {
+  try {
+    await sendText(to, CHECKING_PRODUCT_MESSAGE);
+    logger.info({ recipientLast4: last4(to) }, 'sent let me check reply');
+  } catch (err) {
+    logger.warn(
+      { recipientLast4: last4(to), err: err instanceof Error ? err.message : 'unknown' },
+      'failed to send let-me-check acknowledgement',
+    );
+  }
+}
+
 async function runProductMatchOutcome(mediaId: string): Promise<ProductMatchOutcome | null> {
   try {
     logger.info({ mediaId }, 'media download started');
@@ -2062,14 +2097,18 @@ async function findReferencedImageMediaId(whatsappMessageId: string | undefined)
   return null;
 }
 
+// Recent-image context window. A customer may send a photo first and only ask
+// "available?" some minutes later; 30 min matches the conversation-context TTL.
+const RECENT_IMAGE_CONTEXT_MS = 30 * 60 * 1000;
+
 async function findRecentConversationImageMediaId(conversationId: string): Promise<string | null> {
-  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+  const windowStart = new Date(Date.now() - RECENT_IMAGE_CONTEXT_MS);
   const image = await prisma.message.findFirst({
     where: {
       conversationId,
       messageType: MessageType.IMAGE,
       mediaUrl: { not: null },
-      createdAt: { gte: tenMinutesAgo },
+      createdAt: { gte: windowStart },
     },
     orderBy: { createdAt: 'desc' },
     select: { mediaUrl: true },

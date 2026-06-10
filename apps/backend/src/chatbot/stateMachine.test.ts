@@ -242,7 +242,7 @@ describe('stateMachine', () => {
     expect(r.context.lastMatchedImageMediaId).toBe('new_media');
     expect(r.context.lastImageUsable).toBe(true);
     expect(r.actions).toEqual([
-      { type: 'SEND_TEXT', body: 'Got your new photo! Let me find this in our catalog...' },
+      { type: 'SEND_TEXT', body: 'Let me check this product for you.' },
       { type: 'RUN_PRODUCT_MATCH', mediaId: 'new_media' },
     ]);
   });

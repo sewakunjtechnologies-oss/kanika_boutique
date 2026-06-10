@@ -161,6 +161,13 @@ export const CANCEL_OR_CHANGE_MESSAGE =
 export const PRODUCT_FIRST_MESSAGE =
   "Please send the product photo or article number first, then I'll check availability.";
 
+/**
+ * Immediate acknowledgement sent the moment a customer sends a product photo,
+ * before we download the media or run inventory matching. Keeps the customer
+ * informed while the (slower) match + stock check runs.
+ */
+export const CHECKING_PRODUCT_MESSAGE = 'Let me check this product for you.';
+
 export function isProductChangeIntent(text: string): boolean {
   const t = normalizeIntentText(text);
   return /\b(change product|change the product|different product|another product|something else|not this|wrong product|no this is not|change item|new product|want to change the product)\b/.test(t);
@@ -394,7 +401,7 @@ function handleIdle(event: ChatEvent, _context: OrderContext): TransitionResult 
       nextState: ConversationState.AWAITING_PRODUCT_CONFIRMATION,
       context: {},
       actions: [
-        { type: 'SEND_TEXT', body: 'Got your photo! Let me find this in our catalog...' },
+        { type: 'SEND_TEXT', body: CHECKING_PRODUCT_MESSAGE },
         { type: 'RUN_PRODUCT_MATCH', mediaId: event.mediaId },
       ],
     };
@@ -461,7 +468,7 @@ function handleAwaitingNewProduct(event: ChatEvent, context: OrderContext): Tran
         lastMatchedImageMediaId: event.mediaId,
       },
       actions: [
-        { type: 'SEND_TEXT', body: 'Got your new photo! Let me find this in our catalog...' },
+        { type: 'SEND_TEXT', body: CHECKING_PRODUCT_MESSAGE },
         { type: 'RUN_PRODUCT_MATCH', mediaId: event.mediaId },
       ],
     };
