@@ -1,6 +1,11 @@
 import { prisma, ConversationState, Intent, MessageType, OrderStatus, Prisma, type Conversation } from '@kda/db';
 import { botError, botLog, logger } from '../logger';
-import { classifyCustomerIntent, classifyIntent, type CustomerIntentInput } from '../ai/intentClassifier';
+import {
+  classifyCustomerIntent,
+  classifyIntent,
+  detectCustomerIntent,
+  type CustomerIntentInput,
+} from '../ai/intentClassifier';
 import { matchProduct, type ProductMatchCandidate, type ProductMatchOutcome } from '../ai/productMatcher';
 import { extractPayment } from '../ai/paymentExtractor';
 import { downloadMedia, sendInteractiveButtons, sendInteractiveList, sendText } from '../whatsapp/client';
@@ -127,7 +132,10 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
   let intent: Intent = Intent.UNKNOWN;
   const deterministicIntent = isActiveOrderState(conv.state)
     ? Intent.ORDER_INTENT
-    : detectDeterministicIntent(input.message);
+    : detectDeterministicIntent(input.message, {
+        conversationId: conv.id,
+        senderLast4: last4(input.customerWhatsappNumber),
+      });
   if (deterministicIntent) {
     intent = deterministicIntent;
     botLog('INTENT_DETECTED', {
@@ -160,7 +168,7 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
   });
 
   if (intent !== Intent.ORDER_INTENT) {
-    logger.info({ conversationId: conv.id, intent }, 'non-order intent — no bot reply');
+    logger.info({ conversationId: conv.id, intent }, 'Ignored non-intent message');
     return;
   }
 
@@ -680,7 +688,7 @@ async function messageToEvent(msg: IncomingMessage): Promise<ChatEvent> {
     case 'text':
       {
         const referencedMediaId = await findReferencedImageMediaId(msg.context?.id);
-        if (referencedMediaId && looksLikeProductInquiry(msg.text.body)) {
+        if (referencedMediaId && detectCustomerIntent(msg.text.body).shouldTriggerBot) {
           return { type: 'IMAGE', mediaId: referencedMediaId, caption: msg.text.body };
         }
       }
@@ -707,20 +715,27 @@ async function messageToEvent(msg: IncomingMessage): Promise<ChatEvent> {
   }
 }
 
-function detectDeterministicIntent(msg: IncomingMessage): Intent | null {
+function detectDeterministicIntent(
+  msg: IncomingMessage,
+  logContext: { conversationId: string; senderLast4: string | null },
+): Intent | null {
   if (msg.type === 'image' || msg.type === 'interactive' || msg.type === 'button') {
     return Intent.ORDER_INTENT;
   }
-  if (msg.type !== 'text') return null;
+  if (msg.type !== 'text') return Intent.UNKNOWN;
 
   const text = msg.text.body;
-  if (looksLikeBrowseRequest(text)) return Intent.ORDER_INTENT;
-  if (looksLikeProductInquiry(text)) return Intent.ORDER_INTENT;
-  if (looksLikeFaq(text)) return Intent.ORDER_INTENT;
-  if (/\b(order|status|delivery|payment|upi|address|pincode|return|exchange)\b/i.test(text)) {
+  const customerIntent = detectCustomerIntent(text);
+  botLog('TEXT_INTENT_CLASSIFIED', {
+    conversationId: logContext.conversationId,
+    senderLast4: logContext.senderLast4,
+    intent: customerIntent.intent,
+    shouldTriggerBot: customerIntent.shouldTriggerBot,
+  });
+  if (customerIntent.shouldTriggerBot) {
     return Intent.ORDER_INTENT;
   }
-  return null;
+  return customerIntent.intent === 'casual' ? Intent.PERSONAL_CHAT : Intent.UNKNOWN;
 }
 
 function isActiveOrderState(state: ConversationState): boolean {
@@ -775,10 +790,7 @@ async function resolveTakeoverForTrigger(
 }
 
 function looksLikeBotTriggerText(text: string): boolean {
-  return looksLikeBrowseRequest(text) ||
-    looksLikeProductInquiry(text) ||
-    looksLikeFaq(text) ||
-    /\b(order|buy|purchase|book|available|availability|stock|product|article|suit|lehenga|saree|kurti)\b/i.test(text);
+  return detectCustomerIntent(text).shouldTriggerBot;
 }
 
 async function buildIntentInput(
@@ -811,6 +823,11 @@ function normalizeMime(m: string): 'image/jpeg' | 'image/png' | 'image/webp' | '
   if (m.includes('webp')) return 'image/webp';
   if (m.includes('gif')) return 'image/gif';
   return 'image/jpeg';
+}
+
+function last4(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return value.slice(-4);
 }
 
 // ============================================================================
@@ -1962,15 +1979,30 @@ function sameSize(a: string, b: string): boolean {
 
 async function runProductMatchOutcome(mediaId: string): Promise<ProductMatchOutcome | null> {
   try {
+    logger.info({ mediaId }, 'media download started');
     const downloaded = await downloadMedia(mediaId);
+    logger.info({ mediaId, storedPath: downloaded.storedPath }, 'media download success');
     const buf = await fs.readFile(storage.resolve(downloaded.storedPath));
+    logger.info({ mediaId }, 'inventory matching started');
     const outcome = await matchProduct({
       imageBase64: buf.toString('base64'),
       imageMediaType: normalizeMime(downloaded.mimeType),
     });
+    logger.info(
+      {
+        mediaId,
+        matchedProductId: outcome.matchedProductId ?? null,
+        confidence: outcome.confidence,
+        confidenceBand: outcome.confidenceBand,
+      },
+      outcome.matchedProductId ? 'product match found' : 'product match not found',
+    );
     return outcome;
   } catch (err) {
-    logger.error({ err }, 'product match failed');
+    logger.error(
+      { mediaId, err: err instanceof Error ? { name: err.name, message: err.message } : err },
+      'media download or product match failed',
+    );
     return null;
   }
 }
@@ -2141,10 +2173,6 @@ function looksLikeProductInquiry(text: string): boolean {
   return /\b(available|availability|stock|size|price|rate|cost|kitna|kitne|kya|hai|article|sku|code|suit|lehenga|saree|kurti|order|buy|piece|pcs)\b/.test(
     t,
   );
-}
-
-function looksLikeFaq(text: string): boolean {
-  return detectQuestionTopic(text) !== null;
 }
 
 function looksLikeBrowseRequest(text: string): boolean {

@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { env } from '../config/env';
 import { callJsonOutput } from './callJsonOutput';
-import { classifyCustomerIntent, classifyCustomerIntentDeterministic } from './intentClassifier';
+import {
+  classifyCustomerIntent,
+  classifyCustomerIntentDeterministic,
+  detectCustomerIntent,
+} from './intentClassifier';
 
 vi.mock('./callJsonOutput', () => ({
   callJsonOutput: vi.fn(),
@@ -87,5 +91,51 @@ describe('detailed customer intent deterministic fallback', () => {
     } finally {
       env.GEMINI_API_KEY = originalKey;
     }
+  });
+});
+
+describe('WhatsApp bot trigger gate', () => {
+  test.each([
+    'hi',
+    'hello',
+    'hey',
+    'hii',
+    'good morning',
+    'good evening',
+    'thanks',
+    'thank you',
+    'ok',
+    'okay',
+    '👍',
+    'hello ji',
+    'hi mam',
+    'price?',
+    'random text',
+  ])('does not trigger for %s', (message) => {
+    expect(detectCustomerIntent(message).shouldTriggerBot).toBe(false);
+  });
+
+  test.each([
+    ['Is this available?', 'availability'],
+    ['Available?', 'availability'],
+    ['Is this suit available or not?', 'availability'],
+    ['Do you have this?', 'availability'],
+    ['price and availability', 'availability'],
+    ['ye available hai kya', 'availability'],
+    ['available hai kya', 'availability'],
+    ['ye suit available hai kya', 'availability'],
+    ['I want to order this', 'order'],
+    ['I want to order something', 'order'],
+    ['Can I buy this?', 'order'],
+    ['I want this suit', 'order'],
+    ['Order this suit', 'order'],
+    ['book this', 'order'],
+    ['mujhe ye order karna hai', 'order'],
+    ['show me products', 'order'],
+    ['more options', 'order'],
+  ])('triggers %s as %s', (message, intent) => {
+    const result = detectCustomerIntent(message);
+    expect(result.shouldTriggerBot).toBe(true);
+    expect(result.intent).toBe(intent);
   });
 });

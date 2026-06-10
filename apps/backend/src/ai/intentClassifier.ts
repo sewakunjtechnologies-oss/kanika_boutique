@@ -36,6 +36,13 @@ export interface CustomerIntentInput {
   availableProductListShown?: boolean;
 }
 
+export type CustomerTriggerIntent = 'availability' | 'order' | 'casual' | 'unknown';
+
+export interface CustomerTriggerResult {
+  shouldTriggerBot: boolean;
+  intent: CustomerTriggerIntent;
+}
+
 const DETAILED_SYSTEM_PROMPT = `You classify customer messages for a WhatsApp boutique bot.
 The boutique sells kurtis and suits. Use the conversation context to classify the customer's next intent.
 
@@ -223,6 +230,25 @@ export function classifyCustomerIntentDeterministic(input: CustomerIntentInput):
   return result('UNKNOWN', 0.6);
 }
 
+export function detectCustomerIntent(text: string): CustomerTriggerResult {
+  const normalized = normalizeTriggerText(text);
+  if (!normalized) return { shouldTriggerBot: false, intent: 'casual' };
+
+  if (isCasualTriggerText(normalized)) {
+    return { shouldTriggerBot: false, intent: 'casual' };
+  }
+
+  if (isAvailabilityTriggerText(normalized)) {
+    return { shouldTriggerBot: true, intent: 'availability' };
+  }
+
+  if (isOrderTriggerText(normalized) || isBrowseTriggerText(normalized)) {
+    return { shouldTriggerBot: true, intent: 'order' };
+  }
+
+  return { shouldTriggerBot: false, intent: 'unknown' };
+}
+
 function result(
   intent: DetailedIntentResult['intent'],
   confidence: number,
@@ -251,4 +277,55 @@ function normalizeSize(value: string | null): DetailedIntentResult['size'] {
 
 function normalize(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function normalizeTriggerText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[!?.,;:]+/g, ' ')
+    .replace(/(.)\1{2,}/g, '$1$1')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+function isCasualTriggerText(text: string): boolean {
+  if (!/[\p{L}\p{N}]/u.test(text)) return true;
+  if (
+    /^(hi+|hello+|hey+|namaste|good morning|good afternoon|good evening|thanks|thank you|thx|ok|okay|k|fine|great|nice|cool)( ji| mam| maam| madam| didi| dear)?$/.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  if (/^(ji|haan ji|han ji|yes thanks|ok thanks|okay thanks)$/.test(text)) return true;
+  if (/^(price|rate|cost|amount|kitna|kitne|mrp)$/.test(text)) return true;
+  return false;
+}
+
+function isAvailabilityTriggerText(text: string): boolean {
+  return (
+    /\b(available|availability)\b/.test(text) ||
+    /\b(stock|do you have|have this|mil jayega|hai kya|h kya)\b/.test(text) ||
+    /\b(ye|yeh|yah|is this|this|suit|kurti|product).*\b(hai kya|available hai kya)\b/.test(text)
+  );
+}
+
+function isOrderTriggerText(text: string): boolean {
+  return (
+    /\b(i want to order|want to order|mujhe .*order karna|order this|order karna|new order)\b/.test(text) ||
+    /\b(can i buy|i want to buy|want to buy|buy this|purchase this|book this)\b/.test(text) ||
+    /\b(i want this|mujhe ye|mujhe yeh|ye chahiye|yeh chahiye).*\b(suit|kurti|product|piece|item)?\b/.test(text) ||
+    /\b(order|buy|purchase|book)\b.*\b(suit|kurti|product|item|piece|this|ye|yeh)\b/.test(text)
+  );
+}
+
+function isBrowseTriggerText(text: string): boolean {
+  return (
+    /\b(show|browse|catalog|catalogue|collection|options|designs)\b.*\b(product|products|suit|suits|kurti|kurtis|item|items|options|designs)\b/.test(
+      text,
+    ) ||
+    /\b(aur options|more options|dusre products|other products|products dikhao|suits dikhao|available suits dikhao)\b/.test(
+      text,
+    )
+  );
 }

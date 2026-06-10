@@ -61,6 +61,14 @@ webhookRouter.post(WEBHOOK_PATHS, async (req: Request, res: Response): Promise<v
   }
 
   const entries = Array.isArray(payload.entry) ? payload.entry : [];
+  logger.info(
+    {
+      entries: entries.length,
+      fields: entries.flatMap((e) => e.changes?.map((c) => c.field) ?? []) ?? [],
+      object: payload.object,
+    },
+    'WhatsApp webhook POST received',
+  );
   botLog('WEBHOOK_RECEIVED', {
     entries: entries.length,
     fields: entries.flatMap((e) => e.changes?.map((c) => c.field) ?? []) ?? [],

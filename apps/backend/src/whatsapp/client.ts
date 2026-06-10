@@ -226,7 +226,7 @@ async function withGuard(
   if (!options.ignoreTakeover && isTakeoverActive(conv)) {
     logger.info(
       {
-        to,
+        recipientLast4: maskPhone(to),
         conversationId: conv.conversationId,
         until: conv.humanTakeoverUntil?.toISOString(),
       },
@@ -240,20 +240,26 @@ async function withGuard(
     return { ok: true, wamid, conversationId: conv.conversationId };
   } catch (err) {
     const info = describeGraphError(err);
-    botError('ERROR_DETAILS', err, { step: 'graph_api_send', to, status: info.status, data: info.data });
+    botError('ERROR_DETAILS', err, {
+      step: 'graph_api_send',
+      recipientLast4: maskPhone(to),
+      status: info.status,
+      data: info.data,
+    });
     return { ok: false, reason: 'graph_error', detail: info };
   }
 }
 
 async function postMessage(payload: object): Promise<string> {
   const url = `/${env.META_PHONE_NUMBER_ID}/messages`;
+  const p = payload as { to?: string; type?: string };
+  logger.info({ recipientLast4: maskPhone(p.to), type: p.type }, 'reply send started');
   const resp = await graphApi.post<{ messages?: { id: string }[] }>(url, payload);
   const wamid = resp.data.messages?.[0]?.id;
   if (!wamid) {
     throw new Error(`graph api returned no wamid: ${JSON.stringify(resp.data)}`);
   }
-  const p = payload as { to?: string; type?: string };
-  botLog('WHATSAPP_REPLY_SENT', { to: p.to, type: p.type, wamid });
+  botLog('WHATSAPP_REPLY_SENT', { recipientLast4: maskPhone(p.to), type: p.type, wamid });
   return wamid;
 }
 
@@ -294,4 +300,9 @@ function mimeToExt(mime: string): string {
     'application/pdf': '.pdf',
   };
   return map[mime] ?? '';
+}
+
+function maskPhone(value: string | undefined): string | null {
+  if (!value) return null;
+  return value.slice(-4);
 }

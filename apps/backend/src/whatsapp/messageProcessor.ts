@@ -83,7 +83,7 @@ async function persistInboundMessage(msg: IncomingMessage, contactName: string |
 
   const { type, content, mediaUrl } = extractMessageContent(msg);
   botLog('MESSAGE_TYPE_DETECTED', {
-    from: msg.from,
+    senderLast4: maskWaId(msg.from),
     messageId: msg.id,
     type: msg.type,
     mappedType: type,
@@ -91,13 +91,22 @@ async function persistInboundMessage(msg: IncomingMessage, contactName: string |
   });
   if (msg.type === 'text') {
     botLog('TEXT_EXTRACTED', {
-      from: msg.from,
+      senderLast4: maskWaId(msg.from),
       messageId: msg.id,
-      text: msg.text.body.slice(0, 500),
+      length: msg.text.body.length,
     });
   } else if (msg.type === 'image') {
+    logger.info(
+      {
+        senderLast4: maskWaId(msg.from),
+        messageId: msg.id,
+        mimeType: msg.image.mime_type,
+        hasCaption: Boolean(msg.image.caption),
+      },
+      'image message received',
+    );
     botLog('IMAGE_MEDIA_ID_FOUND', {
-      from: msg.from,
+      senderLast4: maskWaId(msg.from),
       messageId: msg.id,
       mediaId: msg.image.id,
       mimeType: msg.image.mime_type,
@@ -121,7 +130,7 @@ async function persistInboundMessage(msg: IncomingMessage, contactName: string |
       data: { lastInboundAt: new Date() },
     });
     logger.info(
-      { from: msg.from, type, conversationId: conversation.id, wamid: msg.id },
+      { senderLast4: maskWaId(msg.from), type, conversationId: conversation.id, wamid: msg.id },
       'inbound message stored',
     );
     emitToDashboard('message', {
@@ -131,7 +140,7 @@ async function persistInboundMessage(msg: IncomingMessage, contactName: string |
     });
   } catch (err) {
     if (isUniqueConstraintError(err)) {
-      logger.debug({ wamid: msg.id }, 'duplicate inbound message — skipping');
+      logger.info({ wamid: msg.id }, 'Duplicate WhatsApp message ignored');
       return;
     }
     throw err;
@@ -151,6 +160,10 @@ async function persistInboundMessage(msg: IncomingMessage, contactName: string |
   } catch (err) {
     botError('ERROR_DETAILS', err, { step: 'orchestrator', wamid: msg.id });
   }
+}
+
+function maskWaId(value: string): string {
+  return value.slice(-4);
 }
 
 // =============================================================================
