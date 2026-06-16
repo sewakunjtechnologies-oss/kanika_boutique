@@ -5,6 +5,7 @@ import { getDefaultPrinter, getPrinters, print } from 'pdf-to-printer';
 import type { PrintOptions } from 'pdf-to-printer';
 import {
   LabelPayload,
+  LabelProfile,
   parseLabelPayload,
   renderOrderLabel,
   resolveLabelProfile,
@@ -15,9 +16,9 @@ import type { PrintJobDto } from './backendClient';
 
 export async function renderJobPdf(job: PrintJobDto): Promise<string> {
   const payload = payloadForJob(job);
-  const profile = resolveLabelProfile(bridgeEnv.LABEL_PROFILE);
-  const pdf = await renderOrderLabel({ ...payload, labelProfile: profile.name }, profile.name);
-  const validation = validateLabelPdfSize(pdf, profile.name, 0.6);
+  const profile = selectedBridgeProfile();
+  const pdf = await renderOrderLabel({ ...payload, labelProfile: profile.name }, profile);
+  const validation = validateLabelPdfSize(pdf, profile, 0.6);
   if (!validation.ok) {
     throw new Error(`generated PDF size mismatch: ${validation.reason ?? 'unknown'}`);
   }
@@ -29,7 +30,10 @@ export async function renderJobPdf(job: PrintJobDto): Promise<string> {
 }
 
 export async function printPdf(filePath: string): Promise<void> {
-  const profile = resolveLabelProfile(bridgeEnv.LABEL_PROFILE);
+  const profile = selectedBridgeProfile();
+  if (profile.rotation !== 0) {
+    throw new Error('Label printing only supports rotation 0 for the 4BARCODE media profile.');
+  }
   const options: PrintOptions = {
     printer: bridgeEnv.PRINTER_NAME,
     scale: bridgeEnv.PRINT_SCALE_MODE,
@@ -40,7 +44,7 @@ export async function printPdf(filePath: string): Promise<void> {
   };
   // eslint-disable-next-line no-console
   console.log(
-    `Print selected: printer="${bridgeEnv.PRINTER_NAME}" profile=${profile.name} page=${profile.widthMm}x${profile.heightMm}mm orientation=${profile.orientation} paper="${profile.paperSizeName}" scale=${bridgeEnv.PRINT_SCALE_MODE} dryRun=${bridgeEnv.PRINT_DRY_RUN}`,
+    `Print selected: printer="${bridgeEnv.PRINTER_NAME}" profile=${profile.name} pdf=${profile.widthMm}x${profile.heightMm}mm orientation=${profile.orientation} rotation=${profile.rotation} paper="${profile.paperSizeName}" scale=${bridgeEnv.PRINT_SCALE_MODE} dryRun=${bridgeEnv.PRINT_DRY_RUN}`,
   );
   if (bridgeEnv.PRINT_DRY_RUN) {
     // eslint-disable-next-line no-console
@@ -75,7 +79,7 @@ export async function buildDiagnostic(): Promise<Record<string, unknown>> {
     printerError = err instanceof Error ? err.message : 'failed to list printers';
   }
 
-  const selectedProfile = resolveLabelProfile(bridgeEnv.LABEL_PROFILE);
+  const selectedProfile = selectedBridgeProfile();
   return {
     selectedPrinter: bridgeEnv.PRINTER_NAME,
     installedPrinters,
@@ -83,12 +87,19 @@ export async function buildDiagnostic(): Promise<Record<string, unknown>> {
     platform: os.platform(),
     release: os.release(),
     labelProfile: bridgeEnv.LABEL_PROFILE,
+    pdf: {
+      widthMm: selectedProfile.widthMm,
+      heightMm: selectedProfile.heightMm,
+      orientation: selectedProfile.orientation,
+      rotation: selectedProfile.rotation,
+    },
     expectedDimensionsMm: {
       width: selectedProfile.widthMm,
       height: selectedProfile.heightMm,
       safeWidth: selectedProfile.safeWidthMm,
       safeHeight: selectedProfile.safeHeightMm,
       orientation: selectedProfile.orientation,
+      rotation: selectedProfile.rotation,
       paperSize: selectedProfile.paperSizeName,
     },
     dryRun: bridgeEnv.PRINT_DRY_RUN,
@@ -104,4 +115,14 @@ function payloadForJob(job: PrintJobDto): LabelPayload {
     return parseLabelPayload(job.payload);
   }
   throw new Error(`unsupported print job type: ${job.type}`);
+}
+
+function selectedBridgeProfile(): LabelProfile {
+  const base = resolveLabelProfile(bridgeEnv.LABEL_PROFILE);
+  return resolveLabelProfile(base, {
+    widthMm: bridgeEnv.LABEL_WIDTH_MM ?? base.widthMm,
+    heightMm: bridgeEnv.LABEL_HEIGHT_MM ?? base.heightMm,
+    orientation: bridgeEnv.PRINT_ORIENTATION,
+    rotation: bridgeEnv.PRINT_ROTATION,
+  });
 }

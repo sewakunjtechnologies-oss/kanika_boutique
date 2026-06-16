@@ -5,6 +5,7 @@ import {
   DEFAULT_LABEL_PROFILE,
   LABEL_PROFILES,
   LabelProfile,
+  LabelProfileInput,
   LabelProfileName,
   mmToPt,
   normalizeLabelProfileName,
@@ -12,7 +13,7 @@ import {
 } from './profiles';
 
 export interface LabelRenderer {
-  renderOrderLabel(payload: LabelPayload, profile: LabelProfileName): Promise<Buffer>;
+  renderOrderLabel(payload: LabelPayload, profile: LabelProfileInput): Promise<Buffer>;
 }
 
 const FONT_REGULAR = 'Helvetica';
@@ -37,8 +38,8 @@ export interface LabelLayout {
   overflows: boolean;
 }
 
-export function computeLabelLayout(payload: LabelPayload, profileName: LabelProfileName): LabelLayout {
-  const profile = LABEL_PROFILES[profileName] ?? resolveLabelProfile(profileName);
+export function computeLabelLayout(payload: LabelPayload, profileInput: LabelProfileInput): LabelLayout {
+  const profile = resolveLabelProfile(profileInput);
   const pageWidthPt = mmToPt(profile.widthMm);
   const pageHeightPt = mmToPt(profile.heightMm);
   const safeXPt = mmToPt(profile.marginLeftMm);
@@ -54,8 +55,8 @@ export function computeLabelLayout(payload: LabelPayload, profileName: LabelProf
   const barcodeBottomPt = barcodeTopPt + barcodeHeightPt;
   const bodyTopPt = safeYPt;
   const bodyBottomPt =
-    profile.name === '4x3_landscape'
-      ? estimateLandscapeBodyBottomPt(bodyTopPt)
+    profile.name === '4x3'
+      ? estimateWide4x3BodyBottomPt(bodyTopPt)
       : estimatePortraitBodyBottomPt(payload, bodyTopPt);
   return {
     profile,
@@ -95,11 +96,11 @@ export async function renderCode128BarcodePng(value: string, heightMm: number): 
 }
 
 export class PdfLabelRenderer implements LabelRenderer {
-  async renderOrderLabel(payload: LabelPayload, profileName: LabelProfileName): Promise<Buffer> {
-    const profile = normalizeLabelProfileName(profileName);
+  async renderOrderLabel(payload: LabelPayload, profileInput: LabelProfileInput): Promise<Buffer> {
+    const profile = resolveLabelProfile(profileInput);
     const layout = computeLabelLayout(payload, profile);
     if (layout.overflows) {
-      throw new Error(`label content overflows ${profile} safe area`);
+      throw new Error(`label content overflows ${profile.name} safe area`);
     }
 
     const barcode = await renderCode128BarcodePng(payload.barcodeValue, layout.profile.barcodeHeightMm);
@@ -113,7 +114,7 @@ export class PdfLabelRenderer implements LabelRenderer {
     doc.info.CreationDate = new Date(0);
     doc.info.Producer = 'kda-labels';
     doc.info.Creator = 'kda-labels';
-    doc.info.Title = `${payload.orderId}-${profile}`;
+    doc.info.Title = `${payload.orderId}-${profile.name}`;
 
     const chunks: Buffer[] = [];
     const done = new Promise<Buffer>((resolve, reject) => {
@@ -128,7 +129,7 @@ export class PdfLabelRenderer implements LabelRenderer {
     if (layout.profile.name === '4x4_portrait') {
       drawPortraitLabel(doc, payload, layout, barcode);
     } else {
-      drawLandscapeLabel(doc, payload, layout, barcode);
+      drawWide4x3Label(doc, payload, layout, barcode);
     }
     doc.end();
     return done;
@@ -139,12 +140,13 @@ export const defaultLabelRenderer: LabelRenderer = new PdfLabelRenderer();
 
 export function renderOrderLabel(
   payload: LabelPayload,
-  profile: LabelProfileName = payload.labelProfile ?? DEFAULT_LABEL_PROFILE,
+  profile: LabelProfileInput = payload.labelProfile ?? DEFAULT_LABEL_PROFILE,
 ): Promise<Buffer> {
+  if (typeof profile === 'object') return defaultLabelRenderer.renderOrderLabel(payload, profile);
   return defaultLabelRenderer.renderOrderLabel(payload, normalizeLabelProfileName(profile));
 }
 
-function drawLandscapeLabel(
+function drawWide4x3Label(
   doc: PDFKit.PDFDocument,
   payload: LabelPayload,
   layout: LabelLayout,
@@ -320,7 +322,7 @@ function twoColumnText(
   return y + size + 3;
 }
 
-function estimateLandscapeBodyBottomPt(topPt: number): number {
+function estimateWide4x3BodyBottomPt(topPt: number): number {
   return topPt + 18 + 14 + 55;
 }
 

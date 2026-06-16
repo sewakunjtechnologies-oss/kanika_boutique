@@ -38,7 +38,7 @@ describe('print jobs', () => {
     expect(payload.addressLine2).toBe('Near Market');
     expect(payload.city).toBe('Sonipat');
     expect(payload.state).toBe('Haryana');
-    expect(payload.labelProfile).toBe('4x3_landscape');
+    expect(payload.labelProfile).toBe('4x3');
     expect(payload.productName).toBe('Blue Floral Pure Cotton Suit');
     expect(payload.sku).toBe('ARTICLE-1');
     expect(payload.size).toBe('40');

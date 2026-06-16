@@ -1,13 +1,15 @@
 // Physical label profiles used by the Windows print bridge. The current live
-// stock is 4x3 landscape; 4x4 portrait is future-ready and opt-in by config.
+// 4x3 stock is already wider than tall, so Windows must print it in normal
+// portrait driver orientation with zero rotation.
 
-export type LabelProfileName = '4x3_landscape' | '4x4_portrait';
-export type LegacyLabelProfileName = '4x3' | '4x4';
+export type LabelProfileName = '4x3' | '4x4_portrait';
+export type LegacyLabelProfileName = '4x3_landscape' | '4x4';
 export type AnyLabelProfileName = LabelProfileName | LegacyLabelProfileName;
 
 export interface LabelProfile {
   name: LabelProfileName;
-  orientation: 'landscape' | 'portrait';
+  orientation: 'portrait';
+  rotation: 0;
   /** Physical label width in millimetres. */
   widthMm: number;
   /** Physical label height in millimetres. */
@@ -29,9 +31,10 @@ export interface LabelProfile {
 }
 
 export const LABEL_PROFILES: Record<LabelProfileName, LabelProfile> = {
-  '4x3_landscape': {
-    name: '4x3_landscape',
-    orientation: 'landscape',
+  '4x3': {
+    name: '4x3',
+    orientation: 'portrait',
+    rotation: 0,
     widthMm: 101.6,
     heightMm: 76.2,
     safeWidthMm: 95,
@@ -47,6 +50,7 @@ export const LABEL_PROFILES: Record<LabelProfileName, LabelProfile> = {
   '4x4_portrait': {
     name: '4x4_portrait',
     orientation: 'portrait',
+    rotation: 0,
     widthMm: 101.6,
     heightMm: 101.6,
     safeWidthMm: 95,
@@ -61,15 +65,36 @@ export const LABEL_PROFILES: Record<LabelProfileName, LabelProfile> = {
   },
 };
 
-export const DEFAULT_LABEL_PROFILE: LabelProfileName = '4x3_landscape';
+export const DEFAULT_LABEL_PROFILE: LabelProfileName = '4x3';
 
 export function normalizeLabelProfileName(name: string | undefined | null): LabelProfileName {
   if (name === '4x4' || name === '4x4_portrait') return '4x4_portrait';
-  return '4x3_landscape';
+  return '4x3';
 }
 
-export function resolveLabelProfile(name: string | undefined | null): LabelProfile {
-  return LABEL_PROFILES[normalizeLabelProfileName(name)];
+export type LabelProfileInput = AnyLabelProfileName | LabelProfile;
+
+export interface LabelProfileOverrides {
+  widthMm?: number;
+  heightMm?: number;
+  orientation?: 'portrait';
+  rotation?: 0;
+}
+
+export function resolveLabelProfile(
+  nameOrProfile: LabelProfileInput | undefined | null,
+  overrides: LabelProfileOverrides = {},
+): LabelProfile {
+  const base =
+    typeof nameOrProfile === 'object' && nameOrProfile
+      ? nameOrProfile
+      : LABEL_PROFILES[normalizeLabelProfileName(nameOrProfile)];
+  return {
+    ...base,
+    ...overrides,
+    name: base.name,
+    rotation: 0,
+  };
 }
 
 /** PDF user-space units are points (1/72 inch). Convert millimetres → points. */

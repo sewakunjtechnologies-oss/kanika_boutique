@@ -115,7 +115,7 @@ export async function createTestLabelJob(requestedBy = 'print-agent'): Promise<P
     amount: 2270,
     barcodeValue: 'KD-TEST-1001',
     addressLine: 'H.No. 25, Sector 14',
-    labelProfile: '4x3_landscape',
+    labelProfile: '4x3',
   };
 
   return prisma.printJob.create({
@@ -255,7 +255,7 @@ export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
     addressLine2: address.addressLine2,
     city: order.shippingCity,
     state: order.shippingState,
-    labelProfile: '4x3_landscape',
+    labelProfile: '4x3',
   };
 }
 
