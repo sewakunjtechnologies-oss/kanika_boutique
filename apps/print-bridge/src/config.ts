@@ -11,6 +11,13 @@ const envBool = z.preprocess((value) => {
   return value;
 }, z.boolean());
 
+const labelProfile = z.preprocess((value) => {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (raw === '4x4') return '4x4_portrait';
+  if (raw === '4x3' || !raw) return '4x3_landscape';
+  return raw;
+}, z.enum(['4x3_landscape', '4x4_portrait']));
+
 const rootEnvPath = path.resolve(__dirname, '../../../.env');
 if (fs.existsSync(rootEnvPath)) {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -24,8 +31,8 @@ const schema = z.object({
   PRINTER_NAME: z.string().min(1),
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(3000),
   HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
-  LABEL_PROFILE: z.enum(['4x3', '4x4']).default('4x3'),
-  PRINT_SCALE_MODE: z.enum(['noscale', 'fit']).default('noscale'),
+  LABEL_PROFILE: labelProfile.default('4x3_landscape'),
+  PRINT_SCALE_MODE: z.enum(['noscale']).default('noscale'),
   PRINT_DRY_RUN: envBool.default(true),
   OUTPUT_DIR: z.string().default('./print-output'),
 });

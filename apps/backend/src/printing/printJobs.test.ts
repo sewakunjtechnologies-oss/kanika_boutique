@@ -7,7 +7,9 @@ const order = {
   orderNumber: 'KDA-123',
   status: OrderStatus.VERIFIED,
   shippingName: 'Test Customer',
-  shippingAddress: 'A very long address',
+  shippingAddress: 'A very long address, Near Market',
+  shippingCity: 'Sonipat',
+  shippingState: 'Haryana',
   shippingPincode: '110001',
   totalAmount: { toString: () => '4540' },
   paymentExtractedUtr: 'UTR123',
@@ -31,6 +33,12 @@ describe('print jobs', () => {
 
     expect(payload.orderId).toBe('KDA-123');
     expect(payload.maskedPhone).toBe('98XXXXXXXX10');
+    expect(payload.phoneMasked).toBe('98XXXXXXXX10');
+    expect(payload.addressLine1).toBe('A very long address');
+    expect(payload.addressLine2).toBe('Near Market');
+    expect(payload.city).toBe('Sonipat');
+    expect(payload.state).toBe('Haryana');
+    expect(payload.labelProfile).toBe('4x3_landscape');
     expect(payload.productName).toBe('Blue Floral Pure Cotton Suit');
     expect(payload.sku).toBe('ARTICLE-1');
     expect(payload.size).toBe('40');

@@ -20,6 +20,8 @@ interface OrderForLabel {
   orderNumber: string;
   shippingName: string;
   shippingAddress: string;
+  shippingCity: string;
+  shippingState: string;
   shippingPincode: string;
   totalAmount: { toString(): string };
   paymentExtractedUtr: string | null;
@@ -95,20 +97,25 @@ export async function createManualOrderLabelJob(orderId: string, requestedBy: st
 export async function createTestLabelJob(requestedBy = 'print-agent'): Promise<PrintJob> {
   const payload: LabelPayload = {
     storeName: env.BUSINESS_NAME,
-    orderId: 'TEST-LABEL',
-    customerName: 'Printer Test',
+    orderId: 'KD-TEST-1001',
+    customerName: 'Priya Sharma',
     maskedPhone: '98XXXXXX21',
-    pincode: '110001',
-    productName: 'Blue Floral Pure Cotton Suit With Long Name',
-    sku: 'ARTICLE-1',
+    phoneMasked: '98XXXXXX21',
+    addressLine1: 'H.No. 25, Sector 14',
+    addressLine2: 'Near Main Market',
+    city: 'Sonipat',
+    state: 'Haryana',
+    pincode: '131001',
+    productName: 'Pure Cotton Suit With Long Name',
+    sku: 'KD-PCS-101',
     size: '40',
     quantity: 1,
     paymentType: 'UPI',
     paymentStatus: 'PAID',
     amount: 2270,
-    barcodeValue: 'TEST-LABEL',
-    addressLine: '',
-    labelProfile: '4x3',
+    barcodeValue: 'KD-TEST-1001',
+    addressLine: 'H.No. 25, Sector 14',
+    labelProfile: '4x3_landscape',
   };
 
   return prisma.printJob.create({
@@ -225,12 +232,15 @@ export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
   const quantity = order.items.reduce((sum, item) => sum + item.quantity, 0);
   const productSuffix = order.items.length > 1 ? ` +${order.items.length - 1} more` : '';
   const productName = firstItem ? `${firstItem.variant.product.name}${productSuffix}` : 'Order item';
+  const address = splitShippingAddress(order.shippingAddress);
+  const phoneMasked = maskPhone(order.customer.whatsappNumber);
 
   return {
     storeName: env.BUSINESS_NAME,
     orderId: order.orderNumber,
     customerName: order.shippingName,
-    maskedPhone: maskPhone(order.customer.whatsappNumber),
+    maskedPhone: phoneMasked,
+    phoneMasked,
     pincode: order.shippingPincode,
     productName,
     sku: firstItem?.variant.product.sku ?? '-',
@@ -240,8 +250,24 @@ export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
     paymentStatus: 'PAID',
     amount: Number(order.totalAmount.toString()),
     barcodeValue: order.orderNumber,
-    addressLine: order.shippingAddress,
-    labelProfile: '4x3',
+    addressLine: address.addressLine1,
+    addressLine1: address.addressLine1,
+    addressLine2: address.addressLine2,
+    city: order.shippingCity,
+    state: order.shippingState,
+    labelProfile: '4x3_landscape',
+  };
+}
+
+function splitShippingAddress(value: string): { addressLine1: string; addressLine2: string } {
+  const parts = value
+    .split(/\n|,/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return { addressLine1: '', addressLine2: '' };
+  return {
+    addressLine1: parts[0] ?? '',
+    addressLine2: parts.slice(1).join(', '),
   };
 }
 

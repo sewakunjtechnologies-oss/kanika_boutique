@@ -1,4 +1,5 @@
-import { LABEL_PROFILES, LabelProfileName, mmToPt } from './profiles';
+import { LABEL_PROFILES, mmToPt, normalizeLabelProfileName } from './profiles';
+import type { AnyLabelProfileName, LabelProfileName } from './profiles';
 
 // Phase 6 — output validation: confirm a generated PDF's page size matches the
 // selected profile, so a mis-sized label can never reach the printer silently.
@@ -39,23 +40,24 @@ export interface LabelSizeValidation {
  */
 export function validateLabelPdfSize(
   pdf: Buffer,
-  profileName: LabelProfileName,
+  profileName: AnyLabelProfileName,
   tolerancePt = 1,
 ): LabelSizeValidation {
-  const profile = LABEL_PROFILES[profileName];
+  const normalizedProfileName = normalizeLabelProfileName(profileName);
+  const profile = LABEL_PROFILES[normalizedProfileName];
   const expected: PdfSize = {
     widthPt: mmToPt(profile.widthMm),
     heightPt: mmToPt(profile.heightMm),
   };
   const actual = readPdfMediaBox(pdf);
   if (!actual) {
-    return { ok: false, profile: profileName, expected, actual: null, reason: 'no MediaBox found' };
+    return { ok: false, profile: normalizedProfileName, expected, actual: null, reason: 'no MediaBox found' };
   }
   const widthOk = Math.abs(actual.widthPt - expected.widthPt) <= tolerancePt;
   const heightOk = Math.abs(actual.heightPt - expected.heightPt) <= tolerancePt;
   return {
     ok: widthOk && heightOk,
-    profile: profileName,
+    profile: normalizedProfileName,
     expected,
     actual,
     ...(widthOk && heightOk ? {} : { reason: 'page size mismatch' }),

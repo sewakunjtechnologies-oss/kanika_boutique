@@ -23,7 +23,7 @@ const DeviceSchema = z.object({
 
 const HeartbeatSchema = DeviceSchema.extend({
   printerName: z.string().optional(),
-  labelProfile: z.enum(['4x3', '4x4']).optional(),
+  labelProfile: z.enum(['4x3_landscape', '4x4_portrait']).optional(),
   dryRun: z.boolean().optional(),
 });
 

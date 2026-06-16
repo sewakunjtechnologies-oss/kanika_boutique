@@ -1,16 +1,18 @@
 import { z } from 'zod';
-import type { LabelProfileName } from './profiles';
+import { normalizeLabelProfileName } from './profiles';
+import type { AnyLabelProfileName, LabelProfileName } from './profiles';
 
 // Stable, typed label payload (Phase 4). This is what the backend stores on a
 // PrintJob and what the bridge renders. It deliberately contains NO secrets:
 // no payment screenshots, UPI ids, tokens or full phone numbers.
 
-export const LabelPayloadSchema = z.object({
+const RawLabelPayloadSchema = z.object({
   storeName: z.string().min(1),
   orderId: z.string().min(1),
   customerName: z.string().default(''),
   /** Phone is pre-masked by the backend, e.g. "98XXXXXX21". */
   maskedPhone: z.string().default(''),
+  phoneMasked: z.string().default(''),
   productName: z.string().default(''),
   sku: z.string().default(''),
   size: z.string().default(''),
@@ -21,9 +23,27 @@ export const LabelPayloadSchema = z.object({
   /** Value encoded in the Code-128 barcode (defaults to orderId). */
   barcodeValue: z.string().min(1),
   addressLine: z.string().default(''),
+  addressLine1: z.string().default(''),
+  addressLine2: z.string().default(''),
+  city: z.string().default(''),
+  state: z.string().default(''),
   pincode: z.string().default(''),
-  labelProfile: z.enum(['4x3', '4x4']).default('4x3'),
+  labelProfile: z
+    .custom<AnyLabelProfileName>((value) =>
+      ['4x3_landscape', '4x4_portrait', '4x3', '4x4'].includes(String(value)),
+    )
+    .default('4x3_landscape')
+    .transform((value) => normalizeLabelProfileName(value)),
 });
+
+export const LabelPayloadSchema = z.preprocess((value) => {
+  if (!value || typeof value !== 'object') return value;
+  const record = { ...(value as Record<string, unknown>) };
+  if (!record.phoneMasked && record.maskedPhone) record.phoneMasked = record.maskedPhone;
+  if (!record.maskedPhone && record.phoneMasked) record.maskedPhone = record.phoneMasked;
+  if (!record.addressLine1 && record.addressLine) record.addressLine1 = record.addressLine;
+  return record;
+}, RawLabelPayloadSchema);
 
 export type LabelPayload = z.infer<typeof LabelPayloadSchema>;
 

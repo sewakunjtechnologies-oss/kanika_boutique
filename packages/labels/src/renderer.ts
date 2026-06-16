@@ -2,10 +2,12 @@ import PDFDocument from 'pdfkit';
 import bwipjs from 'bwip-js';
 import { LabelPayload } from './payload';
 import {
+  DEFAULT_LABEL_PROFILE,
   LABEL_PROFILES,
   LabelProfile,
   LabelProfileName,
   mmToPt,
+  normalizeLabelProfileName,
   resolveLabelProfile,
 } from './profiles';
 
@@ -21,12 +23,12 @@ export interface LabelLayout {
   profile: LabelProfile;
   pageWidthPt: number;
   pageHeightPt: number;
-  contentXPt: number;
-  contentYPt: number;
-  contentWidthPt: number;
-  contentHeightPt: number;
-  coreTopPt: number;
-  coreBottomPt: number;
+  safeXPt: number;
+  safeYPt: number;
+  safeWidthPt: number;
+  safeHeightPt: number;
+  bodyTopPt: number;
+  bodyBottomPt: number;
   barcodeAreaTopPt: number;
   barcodeAreaBottomPt: number;
   barcodeTopPt: number;
@@ -39,39 +41,41 @@ export function computeLabelLayout(payload: LabelPayload, profileName: LabelProf
   const profile = LABEL_PROFILES[profileName] ?? resolveLabelProfile(profileName);
   const pageWidthPt = mmToPt(profile.widthMm);
   const pageHeightPt = mmToPt(profile.heightMm);
-  const contentXPt = mmToPt(profile.marginLeftMm);
-  const contentYPt = mmToPt(profile.marginTopMm);
-  const contentWidthPt = mmToPt(profile.contentWidthMm);
-  const contentHeightPt = mmToPt(profile.contentHeightMm);
+  const safeXPt = mmToPt(profile.marginLeftMm);
+  const safeYPt = mmToPt(profile.marginTopMm);
+  const safeWidthPt = mmToPt(profile.safeWidthMm);
+  const safeHeightPt = mmToPt(profile.safeHeightMm);
   const barcodeAreaHeightPt = mmToPt(profile.barcodeAreaHeightMm);
   const barcodeHeightPt = mmToPt(profile.barcodeHeightMm);
-  const barcodeAreaBottomPt = contentYPt + contentHeightPt;
-  const barcodeAreaTopPt = barcodeAreaBottomPt - barcodeAreaHeightPt;
-  const barcodeTopPt = barcodeAreaTopPt + mmToPt(1.1);
-  const barcodeBottomPt = barcodeTopPt + barcodeHeightPt;
-  const coreTopPt = contentYPt;
-  const coreBottomPt = estimateCoreBottomPt(payload, profileName, coreTopPt);
   const physicalBottomSafePt = pageHeightPt - mmToPt(profile.marginBottomMm);
-
+  const barcodeAreaBottomPt = Math.min(safeYPt + safeHeightPt, physicalBottomSafePt);
+  const barcodeAreaTopPt = barcodeAreaBottomPt - barcodeAreaHeightPt;
+  const barcodeTopPt = barcodeAreaTopPt + mmToPt(1);
+  const barcodeBottomPt = barcodeTopPt + barcodeHeightPt;
+  const bodyTopPt = safeYPt;
+  const bodyBottomPt =
+    profile.name === '4x3_landscape'
+      ? estimateLandscapeBodyBottomPt(bodyTopPt)
+      : estimatePortraitBodyBottomPt(payload, bodyTopPt);
   return {
     profile,
     pageWidthPt,
     pageHeightPt,
-    contentXPt,
-    contentYPt,
-    contentWidthPt,
-    contentHeightPt,
-    coreTopPt,
-    coreBottomPt,
+    safeXPt,
+    safeYPt,
+    safeWidthPt,
+    safeHeightPt,
+    bodyTopPt,
+    bodyBottomPt,
     barcodeAreaTopPt,
     barcodeAreaBottomPt,
     barcodeTopPt,
     barcodeBottomPt,
     physicalBottomSafePt,
     overflows:
-      coreBottomPt > barcodeAreaTopPt - mmToPt(1.2) ||
+      bodyBottomPt > barcodeAreaTopPt - mmToPt(1) ||
       barcodeAreaBottomPt > physicalBottomSafePt + 0.5 ||
-      contentXPt + contentWidthPt > pageWidthPt - mmToPt(profile.marginRightMm) + 0.5,
+      safeXPt + safeWidthPt > pageWidthPt - mmToPt(profile.marginRightMm) + 0.5,
   };
 }
 
@@ -92,9 +96,10 @@ export async function renderCode128BarcodePng(value: string, heightMm: number): 
 
 export class PdfLabelRenderer implements LabelRenderer {
   async renderOrderLabel(payload: LabelPayload, profileName: LabelProfileName): Promise<Buffer> {
-    const layout = computeLabelLayout(payload, profileName);
+    const profile = normalizeLabelProfileName(profileName);
+    const layout = computeLabelLayout(payload, profile);
     if (layout.overflows) {
-      throw new Error(`label content overflows ${profileName} safe area`);
+      throw new Error(`label content overflows ${profile} safe area`);
     }
 
     const barcode = await renderCode128BarcodePng(payload.barcodeValue, layout.profile.barcodeHeightMm);
@@ -108,7 +113,7 @@ export class PdfLabelRenderer implements LabelRenderer {
     doc.info.CreationDate = new Date(0);
     doc.info.Producer = 'kda-labels';
     doc.info.Creator = 'kda-labels';
-    doc.info.Title = `${payload.orderId}-${profileName}`;
+    doc.info.Title = `${payload.orderId}-${profile}`;
 
     const chunks: Buffer[] = [];
     const done = new Promise<Buffer>((resolve, reject) => {
@@ -117,7 +122,14 @@ export class PdfLabelRenderer implements LabelRenderer {
       doc.on('error', reject);
     });
 
-    drawLabel(doc, payload, profileName, layout, barcode);
+    doc.rect(0, 0, layout.pageWidthPt, layout.pageHeightPt).fill('#FFFFFF');
+    doc.fillColor(BLACK).strokeColor(BLACK);
+
+    if (layout.profile.name === '4x4_portrait') {
+      drawPortraitLabel(doc, payload, layout, barcode);
+    } else {
+      drawLandscapeLabel(doc, payload, layout, barcode);
+    }
     doc.end();
     return done;
   }
@@ -127,82 +139,141 @@ export const defaultLabelRenderer: LabelRenderer = new PdfLabelRenderer();
 
 export function renderOrderLabel(
   payload: LabelPayload,
-  profile: LabelProfileName = payload.labelProfile,
+  profile: LabelProfileName = payload.labelProfile ?? DEFAULT_LABEL_PROFILE,
 ): Promise<Buffer> {
-  return defaultLabelRenderer.renderOrderLabel(payload, profile);
+  return defaultLabelRenderer.renderOrderLabel(payload, normalizeLabelProfileName(profile));
 }
 
-function drawLabel(
+function drawLandscapeLabel(
   doc: PDFKit.PDFDocument,
   payload: LabelPayload,
-  profileName: LabelProfileName,
   layout: LabelLayout,
   barcode: Buffer,
 ): void {
-  const x = layout.contentXPt;
-  const w = layout.contentWidthPt;
-  let y = layout.coreTopPt;
+  const x = layout.safeXPt;
+  const w = layout.safeWidthPt;
+  let y = layout.safeYPt;
   doc.fillColor(BLACK).strokeColor(BLACK);
 
-  const write = (text: string, opts: TextOptions): void => {
-    doc.font(opts.bold ? FONT_BOLD : FONT_REGULAR).fontSize(opts.size);
-    doc.text(sanitize(text), opts.x ?? x, y, {
-      width: opts.width ?? w,
-      height: opts.size + 2,
-      align: opts.align ?? 'left',
-      lineBreak: false,
-      ellipsis: true,
-    });
-    y += opts.advance ?? opts.size + 2;
-  };
-
-  write(payload.storeName.toUpperCase(), { size: 17, bold: true, align: 'center', advance: 18 });
-
-  const paidW = mmToPt(16);
-  doc.lineWidth(1).rect(x + w - paidW, y - 15, paidW, 13).stroke();
-  doc.font(FONT_BOLD).fontSize(8).text('PAID', x + w - paidW, y - 12.5, {
-    width: paidW,
-    align: 'center',
-    lineBreak: false,
-  });
-
-  doc.lineWidth(0.7).moveTo(x, y).lineTo(x + w, y).stroke();
-  y += 3;
-
-  write(`Order ${payload.orderId}`, { size: 12, bold: true, advance: 14 });
-  write(`Customer: ${payload.customerName || '-'}`, { size: 9.6, advance: 11 });
-
-  const rowGap = 1;
-  writeTwoColumns(doc, x, y, w, `Phone: ${payload.maskedPhone || '-'}`, `PIN: ${payload.pincode || '-'}`);
-  y += 11 + rowGap;
-
-  write(`Product: ${payload.productName || '-'}`, { size: 9.6, advance: 11 });
-  write(`SKU: ${payload.sku || '-'}`, { size: 9.6, advance: 11 });
-
-  writeTwoColumns(doc, x, y, w, `Size: ${payload.size || '-'}`, `Qty: ${payload.quantity}`);
-  y += 11 + rowGap;
-
-  writeTwoColumns(doc, x, y, w, `Payment: ${payload.paymentType || 'UPI'}`, `Amount: Rs ${formatAmount(payload.amount)}`, true);
+  drawTopRow(doc, payload, layout, y, 17, 16);
+  y += 18;
+  text(doc, `Order: ${payload.orderId}`, x, y, w, { size: 11.5, bold: true, height: 13 });
   y += 14;
 
-  if (profileName === '4x4') {
-    const extraBottom = layout.barcodeAreaTopPt - mmToPt(2);
-    if (payload.addressLine && y + 10 < extraBottom) {
-      write(`Address: ${payload.addressLine}`, { size: 9, advance: 10 });
-    }
-  }
+  const gap = mmToPt(2.2);
+  const leftW = mmToPt(58);
+  const rightW = w - leftW - gap;
+  const leftX = x;
+  const rightX = x + leftW + gap;
+  let leftY = y;
+  let rightY = y;
 
-  doc.image(barcode, x + mmToPt(1.5), layout.barcodeTopPt, {
-    fit: [w - mmToPt(3), mmToPt(layout.profile.barcodeHeightMm)],
+  leftY = text(doc, safeValue(payload.customerName), leftX, leftY, leftW, { size: 10, bold: true, height: 11 });
+  leftY = text(doc, `Phone: ${phone(payload)}`, leftX, leftY, leftW, { size: 9.2, height: 10 });
+  leftY = text(doc, addressLine(payload.addressLine1 || payload.addressLine), leftX, leftY, leftW, { size: 8.8, height: 10 });
+  if (payload.addressLine2) {
+    leftY = text(doc, addressLine(payload.addressLine2), leftX, leftY, leftW, { size: 8.8, height: 10 });
+  }
+  const locality = [payload.city, payload.state].filter(Boolean).join(', ');
+  if (locality) leftY = text(doc, locality, leftX, leftY, leftW, { size: 8.8, height: 10 });
+  text(doc, `PIN: ${payload.pincode || '-'}`, leftX, leftY, leftW, { size: 9, bold: true, height: 10 });
+
+  rightY = text(doc, safeValue(payload.productName), rightX, rightY, rightW, { size: 9.3, bold: true, height: 11 });
+  rightY = text(doc, `SKU: ${payload.sku || '-'}`, rightX, rightY, rightW, { size: 8.8, height: 10 });
+  rightY = twoColumnText(doc, rightX, rightY, rightW, `Size: ${payload.size || '-'}`, `Qty: ${payload.quantity}`, 8.8);
+  rightY = text(doc, `Amt: Rs ${formatAmount(payload.amount)}`, rightX, rightY + 1, rightW, {
+    size: 11.8,
+    bold: true,
+    height: 14,
+    align: 'right',
+  });
+  text(doc, `Payment: ${(payload.paymentStatus || 'PAID').toUpperCase()}`, rightX, rightY, rightW, {
+    size: 8.5,
+    height: 10,
+    align: 'right',
+  });
+
+  drawBarcode(doc, payload, layout, barcode);
+}
+
+function drawPortraitLabel(
+  doc: PDFKit.PDFDocument,
+  payload: LabelPayload,
+  layout: LabelLayout,
+  barcode: Buffer,
+): void {
+  const x = layout.safeXPt;
+  const w = layout.safeWidthPt;
+  let y = layout.safeYPt;
+  doc.fillColor(BLACK).strokeColor(BLACK);
+
+  drawTopRow(doc, payload, layout, y, 17, 16);
+  y += 21;
+  y = text(doc, `Order: ${payload.orderId}`, x, y, w, { size: 12.5, bold: true, height: 15 });
+  y += 2;
+  y = text(doc, safeValue(payload.customerName), x, y, w, { size: 10.5, bold: true, height: 13 });
+  y = text(doc, `Phone: ${phone(payload)}`, x, y, w, { size: 9.5, height: 12 });
+  y = text(doc, addressLine(payload.addressLine1 || payload.addressLine), x, y, w, { size: 9.4, height: 12 });
+  if (payload.addressLine2) y = text(doc, addressLine(payload.addressLine2), x, y, w, { size: 9.4, height: 12 });
+  const locality = [payload.city, payload.state].filter(Boolean).join(', ');
+  if (locality) y = text(doc, locality, x, y, w, { size: 9.4, height: 12 });
+  y = text(doc, `PIN: ${payload.pincode || '-'}`, x, y, w, { size: 9.6, bold: true, height: 12 });
+  y += 3;
+  y = text(doc, safeValue(payload.productName), x, y, w, { size: 10, bold: true, height: 13 });
+  y = text(doc, `SKU: ${payload.sku || '-'}`, x, y, w, { size: 9.4, height: 12 });
+  y = twoColumnText(doc, x, y, w, `Size: ${payload.size || '-'}`, `Qty: ${payload.quantity}`, 9.4);
+  text(doc, `Amount: Rs ${formatAmount(payload.amount)}`, x, y + 2, w, {
+    size: 14,
+    bold: true,
+    height: 16,
+    align: 'right',
+  });
+
+  drawBarcode(doc, payload, layout, barcode);
+}
+
+function drawTopRow(
+  doc: PDFKit.PDFDocument,
+  payload: LabelPayload,
+  layout: LabelLayout,
+  y: number,
+  brandSize: number,
+  badgeWidthMm: number,
+): void {
+  const x = layout.safeXPt;
+  const w = layout.safeWidthPt;
+  const badgeW = mmToPt(badgeWidthMm);
+  const badgeH = mmToPt(6);
+  text(doc, payload.storeName.toUpperCase(), x, y, w - badgeW - mmToPt(2), {
+    size: brandSize,
+    bold: true,
+    height: badgeH + 1,
+  });
+  doc.lineWidth(1).rect(x + w - badgeW, y, badgeW, badgeH).stroke();
+  text(doc, (payload.paymentStatus || 'PAID').toUpperCase(), x + w - badgeW, y + mmToPt(0.7), badgeW, {
+    size: 8.5,
+    bold: true,
+    height: badgeH,
     align: 'center',
   });
-  doc.font(FONT_REGULAR).fontSize(7.4).fillColor(BLACK);
-  doc.text(sanitize(payload.barcodeValue), x, layout.barcodeBottomPt + mmToPt(0.6), {
-    width: w,
-    height: mmToPt(2.8),
+}
+
+function drawBarcode(
+  doc: PDFKit.PDFDocument,
+  payload: LabelPayload,
+  layout: LabelLayout,
+  barcode: Buffer,
+): void {
+  const x = layout.safeXPt;
+  const w = layout.safeWidthPt;
+  doc.image(barcode, x + mmToPt(2), layout.barcodeTopPt, {
+    fit: [w - mmToPt(4), mmToPt(layout.profile.barcodeHeightMm)],
     align: 'center',
-    lineBreak: false,
-    ellipsis: true,
+  });
+  text(doc, payload.barcodeValue, x, layout.barcodeBottomPt + mmToPt(0.7), w, {
+    size: 7.4,
+    height: mmToPt(3),
+    align: 'center',
   });
 }
 
@@ -210,50 +281,66 @@ interface TextOptions {
   size: number;
   bold?: boolean;
   align?: 'left' | 'center' | 'right';
-  advance?: number;
-  x?: number;
-  width?: number;
+  height?: number;
 }
 
-function writeTwoColumns(
+function text(
+  doc: PDFKit.PDFDocument,
+  value: string,
+  x: number,
+  y: number,
+  width: number,
+  opts: TextOptions,
+): number {
+  const height = opts.height ?? opts.size + 2;
+  doc.font(opts.bold ? FONT_BOLD : FONT_REGULAR).fontSize(opts.size).fillColor(BLACK);
+  doc.text(sanitize(value), x, y, {
+    width,
+    height,
+    align: opts.align ?? 'left',
+    lineBreak: false,
+    ellipsis: true,
+  });
+  return y + height;
+}
+
+function twoColumnText(
   doc: PDFKit.PDFDocument,
   x: number,
   y: number,
-  w: number,
+  width: number,
   left: string,
   right: string,
-  rightBold = false,
-): void {
+  size: number,
+): number {
   const gap = mmToPt(2);
-  const colW = (w - gap) / 2;
-  doc.font(FONT_REGULAR).fontSize(9.6).text(sanitize(left), x, y, {
-    width: colW,
-    height: 12,
-    lineBreak: false,
-    ellipsis: true,
-  });
-  doc.font(rightBold ? FONT_BOLD : FONT_REGULAR).fontSize(rightBold ? 13.2 : 9.6).text(sanitize(right), x + colW + gap, y, {
-    width: colW,
-    height: 15,
-    align: 'right',
-    lineBreak: false,
-    ellipsis: true,
-  });
+  const colW = (width - gap) / 2;
+  text(doc, left, x, y, colW, { size, height: size + 3 });
+  text(doc, right, x + colW + gap, y, colW, { size, height: size + 3, align: 'right' });
+  return y + size + 3;
 }
 
-function estimateCoreBottomPt(payload: LabelPayload, profileName: LabelProfileName, topPt: number): number {
-  let bottom = topPt;
-  bottom += 18; // brand
-  bottom += 3; // divider
-  bottom += 14; // order
-  bottom += 11; // customer
-  bottom += 12; // phone/pin
-  bottom += 11; // product
-  bottom += 11; // sku
-  bottom += 12; // size/qty
-  bottom += 14; // payment/amount
-  if (profileName === '4x4' && payload.addressLine) bottom += 10;
+function estimateLandscapeBodyBottomPt(topPt: number): number {
+  return topPt + 18 + 14 + 55;
+}
+
+function estimatePortraitBodyBottomPt(payload: LabelPayload, topPt: number): number {
+  let bottom = topPt + 21 + 15 + 13 + 12 + 12 + 12 + 12 + 13 + 12 + 12 + 16;
+  if (payload.addressLine2) bottom += 12;
+  if (payload.city || payload.state) bottom += 12;
   return bottom;
+}
+
+function phone(payload: LabelPayload): string {
+  return payload.phoneMasked || payload.maskedPhone || '-';
+}
+
+function addressLine(value: string): string {
+  return value || '-';
+}
+
+function safeValue(value: string): string {
+  return value || '-';
 }
 
 function formatAmount(value: number): string {

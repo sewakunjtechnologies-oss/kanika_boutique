@@ -2,11 +2,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { getDefaultPrinter, getPrinters, print } from 'pdf-to-printer';
+import type { PrintOptions } from 'pdf-to-printer';
 import {
-  LABEL_PROFILES,
   LabelPayload,
   parseLabelPayload,
   renderOrderLabel,
+  resolveLabelProfile,
   validateLabelPdfSize,
 } from '@kda/labels';
 import { bridgeEnv, outputPath } from './config';
@@ -14,29 +15,43 @@ import type { PrintJobDto } from './backendClient';
 
 export async function renderJobPdf(job: PrintJobDto): Promise<string> {
   const payload = payloadForJob(job);
-  const profile = bridgeEnv.LABEL_PROFILE;
-  const pdf = await renderOrderLabel({ ...payload, labelProfile: profile }, profile);
-  const validation = validateLabelPdfSize(pdf, profile, 0.6);
+  const profile = resolveLabelProfile(bridgeEnv.LABEL_PROFILE);
+  const pdf = await renderOrderLabel({ ...payload, labelProfile: profile.name }, profile.name);
+  const validation = validateLabelPdfSize(pdf, profile.name, 0.6);
   if (!validation.ok) {
     throw new Error(`generated PDF size mismatch: ${validation.reason ?? 'unknown'}`);
   }
   await fs.mkdir(outputPath(), { recursive: true });
-  const filename = `${job.id}-${profile}.pdf`;
+  const filename = `${job.id}-${profile.name}.pdf`;
   const filePath = outputPath(filename);
   await fs.writeFile(filePath, pdf);
   return filePath;
 }
 
 export async function printPdf(filePath: string): Promise<void> {
-  if (bridgeEnv.PRINT_DRY_RUN) return;
-  const options = {
+  const profile = resolveLabelProfile(bridgeEnv.LABEL_PROFILE);
+  const options: PrintOptions = {
     printer: bridgeEnv.PRINTER_NAME,
     scale: bridgeEnv.PRINT_SCALE_MODE,
-    orientation: 'portrait' as const,
+    orientation: profile.orientation,
+    paperSize: profile.paperSizeName,
     monochrome: true,
     silent: true,
   };
+  // eslint-disable-next-line no-console
+  console.log(
+    `Print selected: printer="${bridgeEnv.PRINTER_NAME}" profile=${profile.name} page=${profile.widthMm}x${profile.heightMm}mm orientation=${profile.orientation} paper="${profile.paperSizeName}" scale=${bridgeEnv.PRINT_SCALE_MODE} dryRun=${bridgeEnv.PRINT_DRY_RUN}`,
+  );
+  if (bridgeEnv.PRINT_DRY_RUN) {
+    // eslint-disable-next-line no-console
+    console.log(`Dry-run enabled; not sending PDF to printer. PDF saved at ${filePath}`);
+    return;
+  }
+  // eslint-disable-next-line no-console
+  console.log(`Print start: ${filePath}`);
   await print(filePath, options);
+  // eslint-disable-next-line no-console
+  console.log(`Print complete: ${filePath}`);
 }
 
 export async function listPrinters(): Promise<unknown[]> {
@@ -60,7 +75,7 @@ export async function buildDiagnostic(): Promise<Record<string, unknown>> {
     printerError = err instanceof Error ? err.message : 'failed to list printers';
   }
 
-  const selectedProfile = LABEL_PROFILES[bridgeEnv.LABEL_PROFILE];
+  const selectedProfile = resolveLabelProfile(bridgeEnv.LABEL_PROFILE);
   return {
     selectedPrinter: bridgeEnv.PRINTER_NAME,
     installedPrinters,
@@ -71,8 +86,10 @@ export async function buildDiagnostic(): Promise<Record<string, unknown>> {
     expectedDimensionsMm: {
       width: selectedProfile.widthMm,
       height: selectedProfile.heightMm,
-      contentWidth: selectedProfile.contentWidthMm,
-      contentHeight: selectedProfile.contentHeightMm,
+      safeWidth: selectedProfile.safeWidthMm,
+      safeHeight: selectedProfile.safeHeightMm,
+      orientation: selectedProfile.orientation,
+      paperSize: selectedProfile.paperSizeName,
     },
     dryRun: bridgeEnv.PRINT_DRY_RUN,
     backendUrl: bridgeEnv.BACKEND_URL,

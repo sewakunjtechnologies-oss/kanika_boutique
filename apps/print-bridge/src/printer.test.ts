@@ -7,7 +7,7 @@ describe('print bridge dry run', () => {
     process.env.PRINT_AGENT_TOKEN = 'test_print_agent_token_value_32_chars';
     process.env.DEVICE_ID = 'test-device';
     process.env.PRINTER_NAME = '4BARCODE 4B-2054TG';
-    process.env.LABEL_PROFILE = '4x3';
+    process.env.LABEL_PROFILE = '4x3_landscape';
     process.env.PRINT_DRY_RUN = 'true';
     process.env.OUTPUT_DIR = './tmp-test-output';
     vi.resetModules();
@@ -25,6 +25,11 @@ describe('print bridge dry run', () => {
         orderId: 'DRY-RUN',
         customerName: 'Test Customer',
         maskedPhone: '98XXXXXX21',
+        phoneMasked: '98XXXXXX21',
+        addressLine1: 'H.No. 25, Sector 14',
+        addressLine2: 'Near Main Market',
+        city: 'Sonipat',
+        state: 'Haryana',
         pincode: '110001',
         productName: 'Blue Floral Pure Cotton Suit',
         sku: 'ARTICLE-1',
@@ -34,13 +39,14 @@ describe('print bridge dry run', () => {
         paymentStatus: 'PAID',
         amount: 2270,
         barcodeValue: 'DRY-RUN',
-        addressLine: '',
-        labelProfile: '4x3',
+        labelProfile: '4x3_landscape',
       },
     });
 
     const pdf = await fs.readFile(filePath);
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
-    expect(validateLabelPdfSize(pdf, '4x3', 0.6).ok).toBe(true);
+    const validation = validateLabelPdfSize(pdf, '4x3_landscape', 0.6);
+    expect(validation.ok).toBe(true);
+    expect(validation.actual!.widthPt).toBeGreaterThan(validation.actual!.heightPt);
   });
 });
