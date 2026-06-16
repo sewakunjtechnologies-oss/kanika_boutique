@@ -119,6 +119,14 @@ services:
       # ---- Printing ----
       - key: PRINT_PROVIDER
         value: manual
+      - key: AUTO_PRINT_ORDER_LABELS
+        value: "false"
+      - key: PRINT_AGENT_TOKEN
+        sync: false
+      - key: PRINT_JOB_MAX_ATTEMPTS
+        value: "3"
+      - key: PRINT_JOB_CLAIM_TIMEOUT_SECONDS
+        value: "120"
 
       # ---- Business ----
       - key: BUSINESS_NAME

@@ -4,7 +4,7 @@
   "private": true,
   "main": "dist/index.js",
   "scripts": {
-    "predev": "npm run build --workspace=@kda/db && npm run build --workspace=@kda/shared",
+    "predev": "npm run build --workspace=@kda/db && npm run build --workspace=@kda/shared && npm run build --workspace=@kda/labels",
     "dev": "ts-node-dev --respawn --transpile-only --no-notify src/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
@@ -21,6 +21,7 @@
   "dependencies": {
     "@google/genai": "^1.5.1",
     "@kda/db": "*",
+    "@kda/labels": "*",
     "@kda/shared": "*",
     "axios": "^1.7.9",
     "axios-retry": "^4.5.0",

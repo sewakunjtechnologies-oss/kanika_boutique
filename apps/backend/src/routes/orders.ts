@@ -11,6 +11,7 @@ import { getPaymentReviewWarnings } from '../chatbot/paymentSafety';
 import { recordStockMovement } from '../chatbot/orderService';
 import { pauseConversationsForOrder, readOrderContext } from '../chatbot/orderContextGuard';
 import { env } from '../config/env';
+import { createAutomaticOrderLabelJob, createManualOrderLabelJob } from '../printing/printJobs';
 
 export const ordersRouter = Router();
 ordersRouter.use(requireAuth);
@@ -338,6 +339,7 @@ ordersRouter.post(
     }
 
     try {
+      let automaticPrintJobId: string | null = null;
       const updated = await prisma.$transaction(async (tx) => {
         const freshOrder = await tx.order.findUnique({
           where: { id: order.id },
@@ -378,6 +380,10 @@ ordersRouter.post(
             totalSpent: { increment: freshOrder.totalAmount },
           },
         });
+        if (env.AUTO_PRINT_ORDER_LABELS) {
+          const job = await createAutomaticOrderLabelJob(tx, freshOrder.id);
+          automaticPrintJobId = job?.id ?? null;
+        }
         return tx.order.findUniqueOrThrow({ where: { id: freshOrder.id } });
       });
 
@@ -410,24 +416,11 @@ ordersRouter.post(
         logger.warn({ err, orderId: order.id }, 'failed to send confirmation WhatsApp');
       }
 
-      if (env.AUTO_PRINT_ON_PAYMENT_APPROVAL) {
-        void (async () => {
-          try {
-            const printResult = await printSource({ sourceType: 'WHATSAPP_ORDER', sourceId: order.id });
-            if (printResult.mode === 'printnode') {
-              await prisma.order.update({
-                where: { id: order.id },
-                data: { status: OrderStatus.PRINTED, printedAt: new Date() },
-              });
-              emitToDashboard('order_status_changed', { orderId: order.id, status: 'PRINTED' });
-            }
-          } catch (err) {
-            logger.error({ err, orderId: order.id }, 'print job failed');
-          }
-        })();
+      if (automaticPrintJobId) {
+        emitToDashboard('printer_status_changed', { pendingJobId: automaticPrintJobId, orderId: order.id });
       }
 
-      res.json({ order: { id: updated.id, status: updated.status } });
+      res.json({ order: { id: updated.id, status: updated.status }, printJobId: automaticPrintJobId });
     } catch (err) {
       logger.error({ err }, 'verify-payment failed');
       if (err instanceof RouteError) {
@@ -662,6 +655,30 @@ ordersRouter.post('/orders/:id/print-sticker', requireManagerOrOwner, async (req
     res.json(printResult);
   } catch (err) {
     logger.error({ err }, 'sticker print failed');
+    res.status(500).json({ error: 'print_failed' });
+  }
+});
+
+ordersRouter.post('/orders/:id/reprint-label', requireManagerOrOwner, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const order = await prisma.order.findUnique({
+      where: { id: (req.params.id as string) },
+      select: { id: true, status: true },
+    });
+    if (!order) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (!PRINTABLE_STATUSES.includes(order.status)) {
+      res.status(409).json({ error: 'invalid_status_transition', action: 'reprint_label', status: order.status });
+      return;
+    }
+
+    const job = await createManualOrderLabelJob(order.id, req.auth!.sub);
+    emitToDashboard('printer_status_changed', { pendingJobId: job.id, orderId: order.id });
+    res.status(201).json({ job: { id: job.id, status: job.status, type: job.type } });
+  } catch (err) {
+    logger.error({ err }, 'label reprint job failed');
     res.status(500).json({ error: 'print_failed' });
   }
 });

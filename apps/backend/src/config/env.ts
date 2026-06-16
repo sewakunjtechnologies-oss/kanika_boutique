@@ -85,6 +85,10 @@ const envSchema = z.object({
   LABEL_PRINTER_ID: z.string().default(''),
   RECEIPT_PRINTER_ID: z.string().default(''),
   AUTO_PRINT_ON_PAYMENT_APPROVAL: envBool.default(false),
+  AUTO_PRINT_ORDER_LABELS: envBool.optional(),
+  PRINT_AGENT_TOKEN: z.string().default(''),
+  PRINT_JOB_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  PRINT_JOB_CLAIM_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(120),
 
   // Auth.
   SESSION_SECRET: z.string().default('dev_session_secret_change_in_prod'),
@@ -140,6 +144,7 @@ if (!parsed.success) {
 }
 
 const envData = parsed.data;
+envData.AUTO_PRINT_ORDER_LABELS ??= envData.AUTO_PRINT_ON_PAYMENT_APPROVAL;
 envData.SESSION_COOKIE_SECURE ??= envData.NODE_ENV === 'production';
 envData.SESSION_COOKIE_SAMESITE ??= areSameSiteUrls(envData.PUBLIC_BACKEND_URL, envData.PUBLIC_DASHBOARD_URL)
   ? 'lax'
@@ -192,6 +197,12 @@ if (parsed.data.NODE_ENV === 'production') {
       'SESSION_COOKIE_SAMESITE',
       'must be none when backend and dashboard are on different site domains',
     );
+  }
+  if (envData.AUTO_PRINT_ORDER_LABELS && !cleaned.PRINT_AGENT_TOKEN) {
+    addProductionError('PRINT_AGENT_TOKEN', 'is required in production when AUTO_PRINT_ORDER_LABELS=true');
+  }
+  if (cleaned.PRINT_AGENT_TOKEN && cleaned.PRINT_AGENT_TOKEN.length < 32) {
+    addProductionError('PRINT_AGENT_TOKEN', 'must be at least 32 characters when configured');
   }
 }
 

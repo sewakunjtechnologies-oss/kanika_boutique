@@ -12,6 +12,7 @@ import {
   MessagesSquare,
   Users,
   Settings,
+  Printer,
   LogOut,
   Menu,
   X,
@@ -27,6 +28,7 @@ const NAV = [
   { href: '/categories', label: 'Categories', icon: Tags },
   { href: '/conversations', label: 'Conversations', icon: MessagesSquare },
   { href: '/customers', label: 'Customers', icon: Users },
+  { href: '/printer', label: 'Printer', icon: Printer },
   { href: '/settings', label: 'Settings', icon: Settings },
 ] as const;
 

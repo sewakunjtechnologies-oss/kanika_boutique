@@ -1,0 +1,29 @@
+{
+  "name": "@kda/print-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "printers:list": "ts-node --transpile-only src/cli.ts printers:list",
+    "bridge:dry-run": "ts-node --transpile-only src/cli.ts bridge:dry-run",
+    "print:test": "ts-node --transpile-only src/cli.ts print:test",
+    "bridge:start": "ts-node --transpile-only src/index.ts",
+    "printer:diagnose": "ts-node --transpile-only src/cli.ts printer:diagnose"
+  },
+  "dependencies": {
+    "@kda/labels": "*",
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "pdf-to-printer": "^5.6.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "ts-node": "^10.9.2",
+    "typescript": "5.9.3",
+    "vitest": "^2.1.8"
+  }
+}

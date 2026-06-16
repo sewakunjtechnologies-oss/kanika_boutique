@@ -20,6 +20,7 @@ import { conversationsRouter } from './routes/conversations';
 import { customersRouter } from './routes/customers';
 import { settingsRouter } from './routes/settings';
 import { uploadsRouter } from './routes/uploads';
+import { printAgentRouter } from './routes/printAgent';
 import {
   maintenanceQueue,
   scheduleMaintenanceJobs,
@@ -129,6 +130,7 @@ app.use(webhookRouter);
 // protected routers below use `router.use(requireAuth)` which would otherwise
 // intercept every /api/* request and 401 before the path is matched.
 app.use('/api', uploadsRouter);
+app.use('/api', printAgentRouter);
 app.use('/api', authRouter);
 app.use('/api', categoriesRouter);
 app.use('/api', productsRouter);

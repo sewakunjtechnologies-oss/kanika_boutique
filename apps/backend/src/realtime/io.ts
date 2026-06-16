@@ -14,7 +14,8 @@ export type DashboardEvent =
   | 'takeover_changed'
   | 'inventory_changed'
   | 'support_requested'
-  | 'image_unmatched';
+  | 'image_unmatched'
+  | 'printer_status_changed';
 
 let io: Server | null = null;
 

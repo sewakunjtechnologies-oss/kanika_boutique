@@ -1,0 +1,78 @@
+import { createBackendTestLabel, backendReachable } from './backendClient';
+import { bridgeEnv } from './config';
+import { buildDiagnostic, listPrinters, printPdf, renderJobPdf } from './printer';
+
+const command = process.argv[2];
+
+async function main(): Promise<void> {
+  switch (command) {
+    case 'printers:list': {
+      const printers = await listPrinters();
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify(printers, null, 2));
+      return;
+    }
+    case 'bridge:dry-run': {
+      const filePath = await renderJobPdf(sampleJob());
+      // eslint-disable-next-line no-console
+      console.log(`Dry-run PDF written: ${filePath}`);
+      return;
+    }
+    case 'print:test': {
+      const filePath = await renderJobPdf(sampleJob());
+      await printPdf(filePath);
+      // eslint-disable-next-line no-console
+      console.log(bridgeEnv.PRINT_DRY_RUN ? `Dry-run test PDF written: ${filePath}` : `Sent test PDF to ${bridgeEnv.PRINTER_NAME}`);
+      return;
+    }
+    case 'printer:diagnose': {
+      const diagnostic = await buildDiagnostic();
+      diagnostic.backendReachable = await backendReachable();
+      diagnostic.backendTestLabelCreated = false;
+      try {
+        await createBackendTestLabel();
+        diagnostic.backendTestLabelCreated = true;
+      } catch {
+        diagnostic.backendTestLabelCreated = false;
+      }
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify(diagnostic, null, 2));
+      return;
+    }
+    default:
+      throw new Error(`Unknown command: ${command ?? '(missing)'}`);
+  }
+}
+
+function sampleJob() {
+  return {
+    id: 'preview-test-label',
+    type: 'TEST_LABEL' as const,
+    status: 'CLAIMED',
+    attempts: 1,
+    createdAt: new Date(0).toISOString(),
+    payload: {
+      storeName: 'Kanika Designs',
+      orderId: 'KDA-TEST-0001',
+      customerName: 'Printer Test Customer With Long Name',
+      maskedPhone: '98XXXXXX21',
+      pincode: '110001',
+      productName: 'Blue Floral Pure Cotton Suit With Very Long Product Name',
+      sku: 'ARTICLE-1',
+      size: '40',
+      quantity: 1,
+      paymentType: 'UPI',
+      paymentStatus: 'PAID',
+      amount: 2270,
+      barcodeValue: 'KDA-TEST-0001',
+      addressLine: 'Test address for 4x4 only',
+      labelProfile: bridgeEnv.LABEL_PROFILE,
+    },
+  };
+}
+
+main().catch((err) => {
+  // eslint-disable-next-line no-console
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+});

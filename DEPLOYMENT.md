@@ -205,6 +205,10 @@ INVOICE_PRINTER_ID=
 LABEL_PRINTER_ID=
 RECEIPT_PRINTER_ID=
 AUTO_PRINT_ON_PAYMENT_APPROVAL=false
+AUTO_PRINT_ORDER_LABELS=false
+PRINT_AGENT_TOKEN=
+PRINT_JOB_MAX_ATTEMPTS=3
+PRINT_JOB_CLAIM_TIMEOUT_SECONDS=120
 CHATBOT_ENABLE_AI_IMAGE_MATCHING=false
 CHATBOT_DEBUG=false
 LOG_LEVEL=info
@@ -214,6 +218,48 @@ Printing notes:
 
 - `PRINT_PROVIDER=manual` generates a PDF and returns the PDF URL from print routes. This is safe for demos and for deployments without printer credentials.
 - `PRINT_PROVIDER=printnode` sends the generated PDF to PrintNode when `PRINTNODE_API_KEY` and the matching printer ID are configured. PDF generation remains the fallback if PrintNode is unavailable.
+- `AUTO_PRINT_ORDER_LABELS=true` creates one idempotent `ORDER_LABEL` print job after owner payment approval. The on-site Windows bridge claims and prints it.
+- `PRINT_AGENT_TOKEN` is backend-only and bridge-only. Never expose it to Vercel/browser JavaScript.
+
+## Windows Label Print Bridge
+
+Install and run this on the shop laptop connected to `4BARCODE 4B-2054TG`.
+
+Bridge `.env`:
+
+```bash
+BACKEND_URL=https://your-backend.example.com
+PRINT_AGENT_TOKEN=<same secret as Render>
+DEVICE_ID=kanika-shop-laptop-01
+PRINTER_NAME=4BARCODE 4B-2054TG
+POLL_INTERVAL_MS=3000
+HEARTBEAT_INTERVAL_MS=30000
+LABEL_PROFILE=4x3
+PRINT_SCALE_MODE=noscale
+PRINT_DRY_RUN=true
+OUTPUT_DIR=./print-output
+```
+
+Commands:
+
+```bash
+npm install
+npm run printers:list
+npm run printer:diagnose
+npm run bridge:dry-run
+npm run print:test
+npm run bridge:start
+```
+
+For the first physical test, keep `PRINT_DRY_RUN=true` and confirm the PDF in `apps/print-bridge/print-output`. Then set `PRINT_DRY_RUN=false`, ensure the Windows printer default paper/form is `Kanika-4x3`, and run `npm run print:test`.
+
+Switch to 4x4 later:
+
+1. Create/select the Windows custom paper form `Kanika-4x4` as `101.6 mm x 101.6 mm`.
+2. Set `LABEL_PROFILE=4x4` on the bridge.
+3. Run `npm run bridge:dry-run`.
+4. Physically test with `npm run print:test`.
+5. Restart `npm run bridge:start`.
 
 Cookie notes:
 

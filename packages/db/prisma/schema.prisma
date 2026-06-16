@@ -94,25 +94,41 @@ enum PaymentMode {
   PAY_LATER
 }
 
+enum PrintJobType {
+  ORDER_LABEL
+  OFFLINE_SLIP
+  PRODUCT_BARCODE
+  TEST_LABEL
+}
+
+enum PrintJobStatus {
+  PENDING
+  CLAIMED
+  PRINTING
+  PRINTED
+  FAILED
+  CANCELLED
+}
+
 // =============================================================================
 // Catalog
 // =============================================================================
 
 model Product {
-  id          String   @id @default(cuid())
-  sku         String   @unique
-  name        String
-  description String
-  category    String
-  categoryId  String?
-  basePrice   Decimal  @db.Decimal(10, 2)
-  imageUrl    String
+  id            String   @id @default(cuid())
+  sku           String   @unique
+  name          String
+  description   String
+  category      String
+  categoryId    String?
+  basePrice     Decimal  @db.Decimal(10, 2)
+  imageUrl      String
   // Cloudinary public_id for the product photo, used to replace/delete the remote asset.
   // Nullable so products created before Cloudinary (or with local images) keep working.
   imagePublicId String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   categoryRecord Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   variants       ProductVariant[]
@@ -241,6 +257,7 @@ model Order {
   rejectedBy     AdminUser?      @relation("OrderRejectedBy", fields: [rejectedById], references: [id], onDelete: SetNull)
   items          OrderItem[]
   stockMovements StockMovement[]
+  printJobs      PrintJob[]
 
   @@index([customerId])
   @@index([orderNumber])
@@ -383,4 +400,32 @@ model ManualReceiptItem {
 
   @@index([manualReceiptId])
   @@index([productVariantId])
+}
+
+// =============================================================================
+// Print jobs — claimed and printed by the on-site Windows print bridge.
+// A job stays non-PRINTED until the bridge confirms a successful print.
+// =============================================================================
+
+model PrintJob {
+  id             String         @id @default(uuid())
+  orderId        String?
+  type           PrintJobType
+  status         PrintJobStatus @default(PENDING)
+  payload        Json
+  idempotencyKey String         @unique
+  attempts       Int            @default(0)
+  claimedBy      String?
+  claimedAt      DateTime?
+  printedAt      DateTime?
+  lastError      String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([orderId])
+  @@index([status, createdAt])
+  @@index([type])
 }
