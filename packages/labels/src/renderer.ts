@@ -22,6 +22,13 @@ const BLACK = '#000000';
 
 export interface LabelLayout {
   profile: LabelProfile;
+  /** Physical PDF page (MediaBox) dimensions in points. */
+  physicalWidthPt: number;
+  physicalHeightPt: number;
+  /**
+   * Logical design-canvas dimensions in points. All content below is laid out
+   * in this space; for a rotated profile it differs from the physical page.
+   */
   pageWidthPt: number;
   pageHeightPt: number;
   safeXPt: number;
@@ -40,8 +47,12 @@ export interface LabelLayout {
 
 export function computeLabelLayout(payload: LabelPayload, profileInput: LabelProfileInput): LabelLayout {
   const profile = resolveLabelProfile(profileInput);
-  const pageWidthPt = mmToPt(profile.widthMm);
-  const pageHeightPt = mmToPt(profile.heightMm);
+  // Physical page = PDF MediaBox the printer receives. Logical canvas = the
+  // space content is laid out in (portrait for a rotated profile).
+  const physicalWidthPt = mmToPt(profile.widthMm);
+  const physicalHeightPt = mmToPt(profile.heightMm);
+  const pageWidthPt = mmToPt(profile.designWidthMm);
+  const pageHeightPt = mmToPt(profile.designHeightMm);
   const safeXPt = mmToPt(profile.marginLeftMm);
   const safeYPt = mmToPt(profile.marginTopMm);
   const safeWidthPt = mmToPt(profile.safeWidthMm);
@@ -54,12 +65,13 @@ export function computeLabelLayout(payload: LabelPayload, profileInput: LabelPro
   const barcodeTopPt = barcodeAreaTopPt + mmToPt(1);
   const barcodeBottomPt = barcodeTopPt + barcodeHeightPt;
   const bodyTopPt = safeYPt;
-  const bodyBottomPt =
-    profile.name === '4x3'
-      ? estimateWide4x3BodyBottomPt(bodyTopPt)
-      : estimatePortraitBodyBottomPt(payload, bodyTopPt);
+  const bodyBottomPt = isPortraitLayout(profile)
+    ? estimatePortraitBodyBottomPt(payload, bodyTopPt)
+    : estimateWide4x3BodyBottomPt(bodyTopPt);
   return {
     profile,
+    physicalWidthPt,
+    physicalHeightPt,
     pageWidthPt,
     pageHeightPt,
     safeXPt,
@@ -104,8 +116,11 @@ export class PdfLabelRenderer implements LabelRenderer {
     }
 
     const barcode = await renderCode128BarcodePng(payload.barcodeValue, layout.profile.barcodeHeightMm);
+    // The PDF page is the PHYSICAL stock. Content is laid out in the logical
+    // canvas and (for a rotated profile) mapped onto the page by a single
+    // renderer-side transform below — the page itself carries no /Rotate.
     const doc = new PDFDocument({
-      size: [layout.pageWidthPt, layout.pageHeightPt],
+      size: [layout.physicalWidthPt, layout.physicalHeightPt],
       margin: 0,
       bufferPages: false,
       autoFirstPage: true,
@@ -123,14 +138,28 @@ export class PdfLabelRenderer implements LabelRenderer {
       doc.on('error', reject);
     });
 
+    // Exactly one rotation layer. When rendererRotation is 90, the logical
+    // portrait canvas (pageWidthPt x pageHeightPt) is rotated a quarter turn so
+    // it covers the landscape physical page (physicalWidthPt x physicalHeightPt)
+    // with every corner inside [0,physicalWidthPt] x [0,physicalHeightPt].
+    //
+    //   logical (lx, ly)  ->  physical (ly, physicalHeightPt - lx)
+    //
+    // i.e. the PDF cm matrix [0 -1 1 0 0 physicalHeightPt].
+    doc.save();
+    if (layout.profile.rendererRotation === 90) {
+      doc.transform(0, -1, 1, 0, 0, layout.physicalHeightPt);
+    }
+
     doc.rect(0, 0, layout.pageWidthPt, layout.pageHeightPt).fill('#FFFFFF');
     doc.fillColor(BLACK).strokeColor(BLACK);
 
-    if (layout.profile.name === '4x4_portrait') {
+    if (isPortraitLayout(layout.profile)) {
       drawPortraitLabel(doc, payload, layout, barcode);
     } else {
       drawWide4x3Label(doc, payload, layout, barcode);
     }
+    doc.restore();
     doc.end();
     return done;
   }
@@ -320,6 +349,11 @@ function twoColumnText(
   text(doc, left, x, y, colW, { size, height: size + 3 });
   text(doc, right, x + colW + gap, y, colW, { size, height: size + 3, align: 'right' });
   return y + size + 3;
+}
+
+/** Every profile except the wide 4x3 lays content out as a portrait column. */
+function isPortraitLayout(profile: LabelProfile): boolean {
+  return profile.name !== '4x3';
 }
 
 function estimateWide4x3BodyBottomPt(topPt: number): number {

@@ -17,6 +17,7 @@ import type { PrintJobDto } from './backendClient';
 export async function renderJobPdf(job: PrintJobDto): Promise<string> {
   const payload = payloadForJob(job);
   const profile = selectedBridgeProfile();
+  logRenderDiagnostics();
   const pdf = await renderOrderLabel({ ...payload, labelProfile: profile.name }, profile);
   const validation = validateLabelPdfSize(pdf, profile, 0.6);
   if (!validation.ok) {
@@ -87,11 +88,15 @@ export async function buildDiagnostic(): Promise<Record<string, unknown>> {
     platform: os.platform(),
     release: os.release(),
     labelProfile: bridgeEnv.LABEL_PROFILE,
+    renderDiagnostics: renderDiagnostics(),
     pdf: {
       widthMm: selectedProfile.widthMm,
       heightMm: selectedProfile.heightMm,
+      designWidthMm: selectedProfile.designWidthMm,
+      designHeightMm: selectedProfile.designHeightMm,
       orientation: selectedProfile.orientation,
       rotation: selectedProfile.rotation,
+      rendererRotation: selectedProfile.rendererRotation,
     },
     expectedDimensionsMm: {
       width: selectedProfile.widthMm,
@@ -122,7 +127,50 @@ function selectedBridgeProfile(): LabelProfile {
   return resolveLabelProfile(base, {
     widthMm: bridgeEnv.LABEL_WIDTH_MM ?? base.widthMm,
     heightMm: bridgeEnv.LABEL_HEIGHT_MM ?? base.heightMm,
+    designWidthMm: bridgeEnv.DESIGN_WIDTH_MM ?? base.designWidthMm,
+    designHeightMm: bridgeEnv.DESIGN_HEIGHT_MM ?? base.designHeightMm,
     orientation: bridgeEnv.PRINT_ORIENTATION,
     rotation: bridgeEnv.PRINT_ROTATION,
   });
+}
+
+/**
+ * Renderer/printer diagnostics. There is exactly one rotation layer: the
+ * renderer applies `rendererRotation` (90 for the rotated profile); the PDF
+ * page metadata stays 0; Windows prints Portrait / Normal at 100% with no
+ * rotation, fit, or scaling.
+ */
+export function renderDiagnostics(): Record<string, string | number | boolean> {
+  const profile = selectedBridgeProfile();
+  return {
+    profile: profile.name,
+    physicalPage: `${profile.widthMm}x${profile.heightMm}mm`,
+    logicalCanvas: `${profile.designWidthMm}x${profile.designHeightMm}mm`,
+    rendererRotation: profile.rendererRotation,
+    pdfRotation: profile.rotation,
+    windowsOrientation: bridgeEnv.PRINT_ORIENTATION,
+    windowsRotation: bridgeEnv.PRINT_ROTATION,
+    scale: bridgeEnv.PRINT_SCALE_MODE,
+    selectedPrinter: bridgeEnv.PRINTER_NAME,
+    dryRun: bridgeEnv.PRINT_DRY_RUN,
+  };
+}
+
+function logRenderDiagnostics(): void {
+  const d = renderDiagnostics();
+  // eslint-disable-next-line no-console
+  console.log(
+    [
+      `profile=${d.profile}`,
+      `physicalPage=${d.physicalPage}`,
+      `logicalCanvas=${d.logicalCanvas}`,
+      `rendererRotation=${d.rendererRotation}`,
+      `pdfRotation=${d.pdfRotation}`,
+      `windowsOrientation=${d.windowsOrientation}`,
+      `windowsRotation=${d.windowsRotation}`,
+      `scale=${d.scale}`,
+      `selectedPrinter=${d.selectedPrinter}`,
+      `dryRun=${d.dryRun}`,
+    ].join('\n'),
+  );
 }

@@ -14,9 +14,10 @@ const envBool = z.preprocess((value) => {
 const labelProfile = z.preprocess((value) => {
   const raw = typeof value === 'string' ? value.trim() : '';
   if (raw === '4x4') return '4x4_portrait';
+  if (raw === '4x3_portrait_rotated') return '4x3_portrait_rotated';
   if (raw === '4x3_landscape' || raw === '4x3' || !raw) return '4x3';
   return raw;
-}, z.enum(['4x3', '4x4_portrait']));
+}, z.enum(['4x3', '4x4_portrait', '4x3_portrait_rotated']));
 
 const rootEnvPath = path.resolve(__dirname, '../../../.env');
 if (fs.existsSync(rootEnvPath)) {
@@ -34,6 +35,8 @@ const schema = z.object({
   LABEL_PROFILE: labelProfile.default('4x3'),
   LABEL_WIDTH_MM: z.coerce.number().positive().optional(),
   LABEL_HEIGHT_MM: z.coerce.number().positive().optional(),
+  DESIGN_WIDTH_MM: z.coerce.number().positive().optional(),
+  DESIGN_HEIGHT_MM: z.coerce.number().positive().optional(),
   PRINT_ORIENTATION: z.enum(['portrait']).default('portrait'),
   PRINT_ROTATION: z.coerce.number().int().refine((value) => value === 0, 'PRINT_ROTATION must be 0').default(0),
   PRINT_SCALE_MODE: z.enum(['noscale']).default('noscale'),
