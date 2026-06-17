@@ -247,6 +247,9 @@ npm install
 npx playwright install chromium
 npm run printers:list
 npm run printer:diagnose
+npm run preview:manual
+npm run preview:online
+npm run preview:test
 npm run bridge:dry-run -- --template=manual-receipt
 npm run bridge:dry-run -- --template=online-order-label
 npm run print:test -- --template=manual-receipt

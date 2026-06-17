@@ -3,19 +3,71 @@ import { bridgeEnv } from './config';
 import { buildDiagnostic, listPrinters, printPdf, renderJobPdf } from './printer';
 import type { PrintJobDto } from './backendClient';
 
-const command = process.argv[2];
+export const VALID_TEMPLATES = ['manual-receipt', 'online-order-label', 'test-label'] as const;
+export type TemplateName = (typeof VALID_TEMPLATES)[number];
 
-type TemplateName = 'manual-receipt' | 'online-order-label' | 'test-label';
-
-function requestedTemplate(): TemplateName {
-  const arg = process.argv.slice(3).find((value) => value.startsWith('--template='));
-  if (!arg) throw new Error('Missing --template=manual-receipt | --template=online-order-label | --template=test-label');
-  const raw = arg.slice('--template='.length);
-  if (raw === 'manual-receipt' || raw === 'online-order-label' || raw === 'test-label') return raw;
-  throw new Error(`Unknown template: ${raw} (expected manual-receipt | online-order-label | test-label)`);
+export interface PreviewTemplateResolution {
+  requestedTemplate: string;
+  resolvedTemplate: TemplateName;
+  jobType: PrintJobDto['type'];
+  renderer: 'renderManualReceiptHtml' | 'renderOnlineOrderHtml' | 'renderTestLabel';
 }
 
-async function main(): Promise<void> {
+export class TemplateArgumentError extends Error {
+  constructor(message: string) {
+    super(`${message}\nValid templates: ${VALID_TEMPLATES.join(', ')}`);
+    this.name = 'TemplateArgumentError';
+  }
+}
+
+export function parseTemplateArg(args: string[]): string {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!arg) continue;
+    if (arg.startsWith('--template=')) {
+      const value = arg.slice('--template='.length).trim();
+      if (!value) throw new TemplateArgumentError('Missing value for --template.');
+      return value;
+    }
+    if (arg === '--template') {
+      const value = args[i + 1]?.trim();
+      if (!value || value.startsWith('--')) throw new TemplateArgumentError('Missing value for --template.');
+      return value;
+    }
+  }
+  throw new TemplateArgumentError('Missing --template argument.');
+}
+
+export function resolvePreviewTemplate(requestedTemplate: string): PreviewTemplateResolution {
+  if (requestedTemplate === 'manual-receipt') {
+    return {
+      requestedTemplate,
+      resolvedTemplate: 'manual-receipt',
+      jobType: 'OFFLINE_CUSTOMER_SLIP',
+      renderer: 'renderManualReceiptHtml',
+    };
+  }
+  if (requestedTemplate === 'online-order-label') {
+    return {
+      requestedTemplate,
+      resolvedTemplate: 'online-order-label',
+      jobType: 'ORDER_LABEL',
+      renderer: 'renderOnlineOrderHtml',
+    };
+  }
+  if (requestedTemplate === 'test-label') {
+    return {
+      requestedTemplate,
+      resolvedTemplate: 'test-label',
+      jobType: 'TEST_LABEL',
+      renderer: 'renderTestLabel',
+    };
+  }
+  throw new TemplateArgumentError(`Invalid template "${requestedTemplate}".`);
+}
+
+export async function runCli(argv = process.argv.slice(2)): Promise<void> {
+  const [command, ...args] = argv;
   switch (command) {
     case 'printers:list': {
       const printers = await listPrinters();
@@ -24,20 +76,24 @@ async function main(): Promise<void> {
       return;
     }
     case 'bridge:dry-run': {
-      const filePath = await renderJobPdf(sampleJob(requestedTemplate()));
+      const resolution = resolvePreviewTemplate(parseTemplateArg(args));
+      const filePath = await renderJobPdf(sampleJob(resolution.resolvedTemplate));
+      logPreviewDiagnostics(resolution, filePath);
       // eslint-disable-next-line no-console
       console.log(`Dry-run PDF written: ${filePath}`);
       return;
     }
     case 'print:test': {
-      const job = sampleJob(requestedTemplate());
+      const resolution = resolvePreviewTemplate(parseTemplateArg(args));
+      const job = sampleJob(resolution.resolvedTemplate);
       const filePath = await renderJobPdf(job);
       await printPdf(filePath);
+      logPreviewDiagnostics(resolution, filePath);
       // eslint-disable-next-line no-console
       console.log(
         bridgeEnv.PRINT_DRY_RUN
-          ? `Dry-run ${requestedTemplate()} PDF written: ${filePath}`
-          : `Sent ${requestedTemplate()} PDF to ${bridgeEnv.PRINTER_NAME}`,
+          ? `Dry-run ${resolution.resolvedTemplate} PDF written: ${filePath}`
+          : `Sent ${resolution.resolvedTemplate} PDF to ${bridgeEnv.PRINTER_NAME}`,
       );
       return;
     }
@@ -60,7 +116,7 @@ async function main(): Promise<void> {
   }
 }
 
-function sampleJob(template: TemplateName): PrintJobDto {
+export function sampleJob(template: TemplateName): PrintJobDto {
   if (template === 'manual-receipt') {
     return {
       id: 'preview-manual-receipt',
@@ -130,8 +186,23 @@ function sampleJob(template: TemplateName): PrintJobDto {
   };
 }
 
-main().catch((err) => {
+function logPreviewDiagnostics(resolution: PreviewTemplateResolution, outputPath: string): void {
   // eslint-disable-next-line no-console
-  console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+  console.log(
+    [
+      `requestedTemplate=${resolution.requestedTemplate}`,
+      `resolvedTemplate=${resolution.resolvedTemplate}`,
+      `jobType=${resolution.jobType}`,
+      `renderer=${resolution.renderer}`,
+      `outputPath=${outputPath}`,
+    ].join('\n'),
+  );
+}
+
+if (require.main === module) {
+  runCli().catch((err) => {
+  // eslint-disable-next-line no-console
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

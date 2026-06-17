@@ -10,6 +10,9 @@
     "printers:list": "ts-node --transpile-only src/cli.ts printers:list",
     "bridge:dry-run": "ts-node --transpile-only src/cli.ts bridge:dry-run",
     "print:test": "ts-node --transpile-only src/cli.ts print:test",
+    "preview:manual": "ts-node --transpile-only src/cli.ts bridge:dry-run --template=manual-receipt",
+    "preview:online": "ts-node --transpile-only src/cli.ts bridge:dry-run --template=online-order-label",
+    "preview:test": "ts-node --transpile-only src/cli.ts bridge:dry-run --template=test-label",
     "bridge:start": "ts-node --transpile-only src/index.ts",
     "printer:diagnose": "ts-node --transpile-only src/cli.ts printer:diagnose"
   },

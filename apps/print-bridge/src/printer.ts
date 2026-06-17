@@ -8,7 +8,7 @@ import {
   parseOfflineCustomerSlipPayload,
   renderManualReceiptHtml,
   renderOnlineOrderHtml,
-  renderTestLabelHtml,
+  renderTestLabel,
   resolveLabelSize,
   validateLabelPdfSize,
 } from '@kda/labels';
@@ -57,8 +57,8 @@ async function renderHtmlForJob(job: PrintJobDto): Promise<RenderedHtml> {
       throw new Error(`template mismatch for TEST_LABEL: ${payload.templateVersion}`);
     }
     return {
-      html: await renderTestLabelHtml(payload, bridgeEnv.LABEL_SIZE),
-      renderer: 'renderTestLabelHtml',
+      html: await renderTestLabel(payload, bridgeEnv.LABEL_SIZE),
+      renderer: 'renderTestLabel',
     };
   }
   if (job.type === 'OFFLINE_CUSTOMER_SLIP') {
@@ -167,7 +167,7 @@ export async function buildDiagnostic(): Promise<Record<string, unknown>> {
 
 export interface JobDispatch {
   requestedTemplate: 'manual-receipt' | 'online-order-label' | 'test-label';
-  renderer: 'renderManualReceiptHtml' | 'renderOnlineOrderHtml' | 'renderTestLabelHtml';
+  renderer: 'renderManualReceiptHtml' | 'renderOnlineOrderHtml' | 'renderTestLabel';
 }
 
 export function dispatchForJobType(type: PrintJobDto['type']): JobDispatch {
@@ -177,7 +177,7 @@ export function dispatchForJobType(type: PrintJobDto['type']): JobDispatch {
     case 'ORDER_LABEL':
       return { requestedTemplate: 'online-order-label', renderer: 'renderOnlineOrderHtml' };
     case 'TEST_LABEL':
-      return { requestedTemplate: 'test-label', renderer: 'renderTestLabelHtml' };
+      return { requestedTemplate: 'test-label', renderer: 'renderTestLabel' };
     default:
       throw new Error(`unsupported print job type: ${type}`);
   }

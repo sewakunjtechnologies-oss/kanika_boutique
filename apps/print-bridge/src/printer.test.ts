@@ -96,7 +96,7 @@ describe('print bridge HTML renderer', () => {
     });
     expect(dispatchForJobType('TEST_LABEL')).toEqual({
       requestedTemplate: 'test-label',
-      renderer: 'renderTestLabelHtml',
+      renderer: 'renderTestLabel',
     });
     expect(() => dispatchForJobType('PRODUCT_BARCODE')).toThrow('unsupported print job type');
   });
