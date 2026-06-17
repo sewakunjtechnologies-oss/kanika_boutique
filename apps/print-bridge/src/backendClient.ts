@@ -3,7 +3,7 @@ import { bridgeEnv } from './config';
 
 export interface PrintJobDto {
   id: string;
-  type: 'ORDER_LABEL' | 'TEST_LABEL' | 'OFFLINE_CUSTOMER_SLIP' | 'PRODUCT_BARCODE';
+  type: 'ORDER_LABEL' | 'TEST_LABEL' | 'OFFLINE_CUSTOMER_SLIP' | 'OFFLINE_RETURN_SLIP' | 'PRODUCT_BARCODE';
   status: 'PENDING' | 'CLAIMED' | 'PRINTING' | 'PRINTED' | 'DRY_RUN_COMPLETED' | 'FAILED' | 'CANCELLED';
   payload: unknown;
   attempts: number;

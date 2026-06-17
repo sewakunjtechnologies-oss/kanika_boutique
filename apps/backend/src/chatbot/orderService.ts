@@ -270,6 +270,7 @@ export interface RecordStockMovementInput {
   newStock: number;
   orderId?: string | null;
   manualReceiptId?: string | null;
+  manualReceiptReturnId?: string | null;
   adminUserId?: string | null;
   note?: string | null;
 }
@@ -287,6 +288,7 @@ export async function recordStockMovement(
       newStock: input.newStock,
       orderId: input.orderId ?? null,
       manualReceiptId: input.manualReceiptId ?? null,
+      manualReceiptReturnId: input.manualReceiptReturnId ?? null,
       adminUserId: input.adminUserId ?? null,
       note: input.note ?? null,
     },

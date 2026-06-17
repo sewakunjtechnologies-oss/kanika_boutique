@@ -9,10 +9,11 @@ import {
   autoOrderLabelIdempotencyKey,
   maskPhone,
   parseLabelPayload,
+  parseManualReceiptReturnSlipPayload,
   parseOfflineCustomerSlipPayload,
 } from '@kda/labels';
 import type { Prisma, PrintJob } from '@kda/db';
-import type { LabelPayload, OfflineCustomerSlipPayload } from '@kda/labels';
+import type { LabelPayload, ManualReceiptReturnSlipPayload, OfflineCustomerSlipPayload } from '@kda/labels';
 import { env } from '../config/env';
 
 type Tx = Prisma.TransactionClient;
@@ -65,9 +66,38 @@ interface ManualReceiptForSlip {
   }[];
 }
 
+interface ManualReceiptReturnForSlip {
+  id: string;
+  reason: string;
+  refundMethod: string;
+  refundAmount: { toString(): string };
+  createdAt: Date;
+  receipt: {
+    id: string;
+    receiptNumber: string;
+    customerName: string | null;
+    customerPhone: string | null;
+  };
+  items: {
+    quantity: number;
+    refundAmount: { toString(): string };
+    receiptItem: {
+      unitPrice: { toString(): string };
+      variant: {
+        size: string;
+        product: {
+          name: string;
+          sku: string;
+        };
+      };
+    };
+  }[];
+}
+
 export interface PrintJobCreateResult {
   job: PrintJob;
   created: boolean;
+  reprintNumber?: number;
 }
 
 export async function createAutomaticOrderLabelJob(tx: Tx, orderId: string): Promise<PrintJob | null> {
@@ -163,6 +193,17 @@ export async function createManualReceiptSlipJob(input: {
   receiptId: string;
   requestedBy: string;
   reprint?: boolean;
+  requestId?: string | null;
+}): Promise<PrintJobCreateResult | null> {
+  if (input.reprint) {
+    return createManualReceiptReprintSlipJob(input);
+  }
+  return createManualReceiptInitialSlipJob(input);
+}
+
+export async function createManualReceiptInitialSlipJob(input: {
+  receiptId: string;
+  requestedBy: string;
 }): Promise<PrintJobCreateResult | null> {
   const receipt = await prisma.manualReceipt.findUnique({
     where: { id: input.receiptId },
@@ -177,21 +218,7 @@ export async function createManualReceiptSlipJob(input: {
   if (!receipt) return null;
 
   const payload = buildManualReceiptSlipPayload(receipt);
-  const idempotencyKey = input.reprint
-    ? `MANUAL_RECEIPT:${receipt.id}:REPRINT:${Date.now()}:${randomUUID()}`
-    : `MANUAL_RECEIPT:${receipt.id}:INITIAL`;
-
-  if (input.reprint) {
-    const job = await prisma.printJob.create({
-      data: {
-        type: PrintJobType.OFFLINE_CUSTOMER_SLIP,
-        status: PrintJobStatus.PENDING,
-        payload: payload as never,
-        idempotencyKey,
-      },
-    });
-    return { job, created: true };
-  }
+  const idempotencyKey = `MANUAL_RECEIPT:${receipt.id}:INITIAL`;
 
   const existing = await prisma.printJob.findUnique({ where: { idempotencyKey } });
   if (existing) return { job: existing, created: false };
@@ -201,7 +228,13 @@ export async function createManualReceiptSlipJob(input: {
       data: {
         type: PrintJobType.OFFLINE_CUSTOMER_SLIP,
         status: PrintJobStatus.PENDING,
-        payload: payload as never,
+        payload: withPrintMetadata(payload, {
+          reprint: false,
+          reprintNumber: 1,
+          requestedBy: input.requestedBy,
+          requestedAt: new Date().toISOString(),
+          originalReceiptId: receipt.id,
+        }) as never,
         idempotencyKey,
       },
     });
@@ -213,6 +246,126 @@ export async function createManualReceiptSlipJob(input: {
     }
     throw err;
   }
+}
+
+export async function createManualReceiptReprintSlipJob(input: {
+  receiptId: string;
+  requestedBy: string;
+  requestId?: string | null;
+}): Promise<PrintJobCreateResult | null> {
+  const receipt = await prisma.manualReceipt.findUnique({
+    where: { id: input.receiptId },
+    include: {
+      items: {
+        include: {
+          variant: { include: { product: { select: { name: true, sku: true } } } },
+        },
+      },
+    },
+  });
+  if (!receipt) return null;
+
+  const reprintNumber = await nextManualReceiptReprintNumber(receipt.id);
+  const idempotencyKey = input.requestId
+    ? `MANUAL_RECEIPT:${receipt.id}:REPRINT:${input.requestId}`
+    : `MANUAL_RECEIPT:${receipt.id}:REPRINT:${randomUUID()}`;
+  const existing = await prisma.printJob.findUnique({ where: { idempotencyKey } });
+  if (existing) return { job: existing, created: false, reprintNumber: existingReprintNumber(existing, reprintNumber) };
+
+  const payload = buildManualReceiptSlipPayload(receipt);
+  try {
+    const job = await prisma.printJob.create({
+      data: {
+        type: PrintJobType.OFFLINE_CUSTOMER_SLIP,
+        status: PrintJobStatus.PENDING,
+        payload: withPrintMetadata(payload, {
+          reprint: true,
+          reprintNumber,
+          requestedBy: input.requestedBy,
+          requestedAt: new Date().toISOString(),
+          originalReceiptId: receipt.id,
+        }) as never,
+        idempotencyKey,
+      },
+    });
+    return { job, created: true, reprintNumber };
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      const job = await prisma.printJob.findUnique({ where: { idempotencyKey } });
+      if (job) return { job, created: false, reprintNumber: existingReprintNumber(job, reprintNumber) };
+    }
+    throw err;
+  }
+}
+
+export async function createManualReceiptReturnSlipJob(input: {
+  receiptId: string;
+  returnId: string;
+  requestedBy: string;
+  reprint?: boolean;
+  requestId?: string | null;
+}): Promise<PrintJobCreateResult | null> {
+  const returnRecord = await prisma.manualReceiptReturn.findFirst({
+    where: { id: input.returnId, receiptId: input.receiptId },
+    include: {
+      receipt: { select: { id: true, receiptNumber: true, customerName: true, customerPhone: true } },
+      items: {
+        include: {
+          receiptItem: {
+            include: {
+              variant: { include: { product: { select: { name: true, sku: true } } } },
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!returnRecord) return null;
+
+  const reprintNumber = input.reprint ? await nextManualReturnSlipReprintNumber(input.returnId) : 1;
+  const idempotencyKey = input.reprint
+    ? input.requestId
+      ? `MANUAL_RECEIPT_RETURN:${input.returnId}:REPRINT:${input.requestId}`
+      : `MANUAL_RECEIPT_RETURN:${input.returnId}:REPRINT:${randomUUID()}`
+    : `MANUAL_RECEIPT_RETURN:${input.returnId}:INITIAL`;
+  const existing = await prisma.printJob.findUnique({ where: { idempotencyKey } });
+  if (existing) return { job: existing, created: false, reprintNumber: existingReprintNumber(existing, reprintNumber) };
+
+  const payload = buildManualReceiptReturnSlipPayload(returnRecord);
+  try {
+    const job = await prisma.printJob.create({
+      data: {
+        type: PrintJobType.OFFLINE_RETURN_SLIP,
+        status: PrintJobStatus.PENDING,
+        payload: withPrintMetadata(payload, {
+          reprint: Boolean(input.reprint),
+          reprintNumber,
+          requestedBy: input.requestedBy,
+          requestedAt: new Date().toISOString(),
+          originalReceiptId: input.receiptId,
+          originalReturnId: input.returnId,
+        }) as never,
+        idempotencyKey,
+      },
+    });
+    return { job, created: true, reprintNumber };
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      const job = await prisma.printJob.findUnique({ where: { idempotencyKey } });
+      if (job) return { job, created: false, reprintNumber: existingReprintNumber(job, reprintNumber) };
+    }
+    throw err;
+  }
+}
+
+export async function getManualReceiptPrintJobs(receiptId: string): Promise<PrintJob[]> {
+  return prisma.printJob.findMany({
+    where: {
+      idempotencyKey: { startsWith: `MANUAL_RECEIPT:${receiptId}:` },
+      type: PrintJobType.OFFLINE_CUSTOMER_SLIP,
+    },
+    orderBy: { createdAt: 'asc' },
+  });
 }
 
 export async function claimNextPrintJob(deviceId: string): Promise<PrintJob | null> {
@@ -355,6 +508,10 @@ export function parseOfflineSlipPrintJobPayload(job: Pick<PrintJob, 'payload'>):
   return parseOfflineCustomerSlipPayload(job.payload);
 }
 
+export function parseManualReturnSlipPrintJobPayload(job: Pick<PrintJob, 'payload'>): ManualReceiptReturnSlipPayload {
+  return parseManualReceiptReturnSlipPayload(job.payload);
+}
+
 export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
   const firstItem = order.items[0];
   const quantity = order.items.reduce((sum, item) => sum + item.quantity, 0);
@@ -413,6 +570,30 @@ export function buildManualReceiptSlipPayload(receipt: ManualReceiptForSlip): Of
   return parseOfflineCustomerSlipPayload(payload);
 }
 
+export function buildManualReceiptReturnSlipPayload(returnRecord: ManualReceiptReturnForSlip): ManualReceiptReturnSlipPayload {
+  const payload: ManualReceiptReturnSlipPayload = {
+    templateVersion: 'manual-return-slip-v1',
+    storeName: env.BUSINESS_NAME,
+    receiptId: returnRecord.receipt.receiptNumber,
+    returnId: returnRecord.id,
+    customerName: returnRecord.receipt.customerName?.trim() || 'Walk-in customer',
+    phoneMasked: maskPhone(returnRecord.receipt.customerPhone),
+    createdAt: returnRecord.createdAt.toISOString(),
+    refundMethod: returnRecord.refundMethod,
+    refundAmount: moneyNumber(returnRecord.refundAmount),
+    reason: returnRecord.reason,
+    items: returnRecord.items.map((item) => ({
+      name: item.receiptItem.variant.product.name,
+      sku: item.receiptItem.variant.product.sku,
+      size: item.receiptItem.variant.size,
+      quantity: item.quantity,
+      refundAmount: moneyNumber(item.refundAmount),
+    })),
+    barcodeValue: returnRecord.id,
+  };
+  return parseManualReceiptReturnSlipPayload(payload);
+}
+
 function splitShippingAddress(value: string): { addressLine1: string; addressLine2: string } {
   const parts = value
     .split(/\n|,/)
@@ -432,6 +613,41 @@ function paymentIdentifier(order: Pick<OrderForLabel, 'id' | 'paymentExtractedUt
 function moneyNumber(value: { toString(): string }): number {
   const numberValue = Number(value.toString());
   return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+async function nextManualReceiptReprintNumber(receiptId: string): Promise<number> {
+  const count = await prisma.printJob.count({
+    where: {
+      idempotencyKey: { startsWith: `MANUAL_RECEIPT:${receiptId}:REPRINT:` },
+      type: PrintJobType.OFFLINE_CUSTOMER_SLIP,
+    },
+  });
+  return count + 2;
+}
+
+async function nextManualReturnSlipReprintNumber(returnId: string): Promise<number> {
+  const count = await prisma.printJob.count({
+    where: {
+      idempotencyKey: { startsWith: `MANUAL_RECEIPT_RETURN:${returnId}:REPRINT:` },
+      type: PrintJobType.OFFLINE_RETURN_SLIP,
+    },
+  });
+  return count + 2;
+}
+
+function withPrintMetadata<T extends object>(payload: T, metadata: Record<string, unknown>): T & { printMetadata: Record<string, unknown> } {
+  return {
+    ...payload,
+    printMetadata: metadata,
+  };
+}
+
+function existingReprintNumber(job: Pick<PrintJob, 'payload'>, fallback: number): number {
+  if (!job.payload || typeof job.payload !== 'object' || Array.isArray(job.payload)) return fallback;
+  const metadata = (job.payload as Record<string, unknown>).printMetadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return fallback;
+  const value = (metadata as Record<string, unknown>).reprintNumber;
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
 function isUniqueConstraintError(err: unknown): boolean {

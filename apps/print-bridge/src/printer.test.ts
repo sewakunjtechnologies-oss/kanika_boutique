@@ -82,6 +82,26 @@ describe('print bridge HTML renderer', () => {
     expect(html).not.toContain('courier');
   });
 
+  test('manual return slip renders as OFFLINE_RETURN_SLIP without address rows', async () => {
+    setBridgeEnv({ LABEL_SIZE: '4x3' });
+
+    const { renderJobPdf } = await import('./printer');
+    const { countPdfPages, validateLabelPdfSize } = await import('@kda/labels');
+    const filePath = await renderJobPdf(manualReturnSlipJob('return-4x3'));
+
+    const pdf = await fs.readFile(filePath);
+    const html = await fs.readFile(filePath.replace(/\.pdf$/, '.html'), 'utf8');
+    const validation = validateLabelPdfSize(pdf, '4x3', 0.6);
+
+    expect(validation.ok).toBe(true);
+    expect(validation.rotation).toBe(0);
+    expect(countPdfPages(pdf)).toBe(1);
+    expect(html).toContain('<div class="paid">RETURN</div>');
+    expect(html).toContain('Return ID: RET-2026-0001');
+    expect(html).not.toContain('<strong>Address:</strong>');
+    expect(html).not.toContain('<strong>Pincode:</strong>');
+  });
+
   test('dispatch maps job types to dedicated HTML renderers', async () => {
     setBridgeEnv({ LABEL_SIZE: '4x3' });
 
@@ -89,6 +109,10 @@ describe('print bridge HTML renderer', () => {
     expect(dispatchForJobType('OFFLINE_CUSTOMER_SLIP')).toEqual({
       requestedTemplate: 'manual-receipt',
       renderer: 'renderManualReceiptHtml',
+    });
+    expect(dispatchForJobType('OFFLINE_RETURN_SLIP')).toEqual({
+      requestedTemplate: 'manual-return-slip',
+      renderer: 'renderManualReceiptReturnSlipHtml',
     });
     expect(dispatchForJobType('ORDER_LABEL')).toEqual({
       requestedTemplate: 'online-order-label',
@@ -245,6 +269,38 @@ function manualReceiptJob(id: string) {
         },
       ],
       barcodeValue: 'MR-2026-0001',
+    },
+  };
+}
+
+function manualReturnSlipJob(id: string) {
+  return {
+    id,
+    type: 'OFFLINE_RETURN_SLIP' as const,
+    status: 'CLAIMED' as const,
+    attempts: 1,
+    createdAt: new Date(0).toISOString(),
+    payload: {
+      templateVersion: 'manual-return-slip-v1',
+      storeName: 'KANIKA DESIGNS',
+      receiptId: 'MR-2026-0001',
+      returnId: 'RET-2026-0001',
+      customerName: 'test-1',
+      phoneMasked: '74XXXXXX41',
+      createdAt: '2026-06-17T10:29:00.000Z',
+      refundMethod: 'CASH',
+      refundAmount: 1760,
+      reason: 'Customer returned item',
+      items: [
+        {
+          name: 'Three-piece Kurti',
+          sku: 'three-piece-kurtis-mq6b1e77',
+          size: '38',
+          quantity: 1,
+          refundAmount: 1760,
+        },
+      ],
+      barcodeValue: 'RET-2026-0001',
     },
   };
 }

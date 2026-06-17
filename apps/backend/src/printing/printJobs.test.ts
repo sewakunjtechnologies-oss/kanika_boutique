@@ -2,10 +2,13 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { OrderStatus, PrintJobStatus, PrintJobType, prisma } from '@kda/db';
 import {
   buildManualReceiptSlipPayload,
+  buildManualReceiptReturnSlipPayload,
   buildOrderLabelPayload,
   cancelPendingTestLabelJobs,
   claimNextPrintJob,
   createAutomaticOrderLabelJob,
+  createManualReceiptReprintSlipJob,
+  createManualReceiptReturnSlipJob,
   createManualReceiptSlipJob,
   markPrintJobDryRunCompleted,
 } from './printJobs';
@@ -53,6 +56,33 @@ const receipt = {
       variant: {
         size: '38',
         product: { name: 'Three-piece Kurti', sku: 'three-piece-kurtis-mq6b1e77' },
+      },
+    },
+  ],
+};
+
+const receiptReturn = {
+  id: 'return_123',
+  reason: 'Customer returned item',
+  refundMethod: 'CASH',
+  refundAmount: { toString: () => '1760.00' },
+  createdAt: new Date('2026-06-17T10:19:00.000Z'),
+  receipt: {
+    id: 'receipt_123',
+    receiptNumber: 'MR-2026-0001',
+    customerName: 'test-1',
+    customerPhone: '917400000041',
+  },
+  items: [
+    {
+      quantity: 1,
+      refundAmount: { toString: () => '1760.00' },
+      receiptItem: {
+        unitPrice: { toString: () => '1760.00' },
+        variant: {
+          size: '38',
+          product: { name: 'Three-piece Kurti', sku: 'three-piece-kurtis-mq6b1e77' },
+        },
       },
     },
   ],
@@ -137,6 +167,28 @@ describe('print jobs', () => {
     expect('pincode' in payload).toBe(false);
   });
 
+  test('builds a manual receipt return slip payload without address fields', () => {
+    const payload = buildManualReceiptReturnSlipPayload(receiptReturn);
+
+    expect(payload.templateVersion).toBe('manual-return-slip-v1');
+    expect(payload.receiptId).toBe('MR-2026-0001');
+    expect(payload.returnId).toBe('return_123');
+    expect(payload.customerName).toBe('test-1');
+    expect(payload.phoneMasked).toBe('74XXXXXXXX41');
+    expect(payload.refundMethod).toBe('CASH');
+    expect(payload.refundAmount).toBe(1760);
+    expect(payload.items[0]).toMatchObject({
+      name: 'Three-piece Kurti',
+      sku: 'three-piece-kurtis-mq6b1e77',
+      size: '38',
+      quantity: 1,
+      refundAmount: 1760,
+    });
+    expect('addressLine1' in payload).toBe(false);
+    expect('city' in payload).toBe(false);
+    expect('pincode' in payload).toBe(false);
+  });
+
   test('existing manual receipt creates an OFFLINE_CUSTOMER_SLIP job', async () => {
     vi.spyOn(prisma.manualReceipt, 'findUnique').mockResolvedValue(receipt as never);
     vi.spyOn(prisma.printJob, 'findUnique').mockResolvedValue(null);
@@ -177,6 +229,8 @@ describe('print jobs', () => {
 
   test('manual receipt reprint creates a fresh job', async () => {
     vi.spyOn(prisma.manualReceipt, 'findUnique').mockResolvedValue(receipt as never);
+    vi.spyOn(prisma.printJob, 'count').mockResolvedValue(0 as never);
+    vi.spyOn(prisma.printJob, 'findUnique').mockResolvedValue(null);
     const create = vi.spyOn(prisma.printJob, 'create').mockResolvedValue({
       id: 'reprint_job',
       type: PrintJobType.OFFLINE_CUSTOMER_SLIP,
@@ -187,6 +241,50 @@ describe('print jobs', () => {
 
     expect(create).toHaveBeenCalledTimes(1);
     expect(String(create.mock.calls[0]?.[0].data.idempotencyKey)).toContain('MANUAL_RECEIPT:receipt_123:REPRINT:');
+  });
+
+  test('manual receipt reprint with same request id returns existing job', async () => {
+    const existingJob = {
+      id: 'reprint_existing',
+      type: PrintJobType.OFFLINE_CUSTOMER_SLIP,
+      status: PrintJobStatus.PENDING,
+      payload: { printMetadata: { reprintNumber: 2 } },
+    };
+    vi.spyOn(prisma.manualReceipt, 'findUnique').mockResolvedValue(receipt as never);
+    vi.spyOn(prisma.printJob, 'count').mockResolvedValue(1 as never);
+    vi.spyOn(prisma.printJob, 'findUnique').mockResolvedValue(existingJob as never);
+    const create = vi.spyOn(prisma.printJob, 'create');
+
+    const result = await createManualReceiptReprintSlipJob({
+      receiptId: receipt.id,
+      requestedBy: 'admin_1',
+      requestId: 'request_1',
+    });
+
+    expect(result?.created).toBe(false);
+    expect(result?.job).toBe(existingJob);
+    expect(result?.reprintNumber).toBe(2);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  test('manual receipt return slip creates OFFLINE_RETURN_SLIP job', async () => {
+    vi.spyOn(prisma.manualReceiptReturn, 'findFirst').mockResolvedValue(receiptReturn as never);
+    vi.spyOn(prisma.printJob, 'findUnique').mockResolvedValue(null);
+    const create = vi.spyOn(prisma.printJob, 'create').mockResolvedValue({
+      id: 'return_slip_job',
+      type: PrintJobType.OFFLINE_RETURN_SLIP,
+      status: PrintJobStatus.PENDING,
+    } as never);
+
+    const result = await createManualReceiptReturnSlipJob({
+      receiptId: receipt.id,
+      returnId: receiptReturn.id,
+      requestedBy: 'admin_1',
+    });
+
+    expect(result?.created).toBe(true);
+    expect(create.mock.calls[0]?.[0].data.type).toBe(PrintJobType.OFFLINE_RETURN_SLIP);
+    expect(create.mock.calls[0]?.[0].data.idempotencyKey).toBe('MANUAL_RECEIPT_RETURN:return_123:INITIAL');
   });
 
   test('dry-run completion does not mark the job physically printed', async () => {

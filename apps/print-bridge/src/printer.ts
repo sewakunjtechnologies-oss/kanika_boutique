@@ -5,7 +5,9 @@ import { getDefaultPrinter, getPrinters, print } from 'pdf-to-printer';
 import { chromium } from 'playwright';
 import {
   parseLabelPayload,
+  parseManualReceiptReturnSlipPayload,
   parseOfflineCustomerSlipPayload,
+  renderManualReceiptReturnSlipHtml,
   renderManualReceiptHtml,
   renderOnlineOrderHtml,
   renderTestLabel,
@@ -69,6 +71,16 @@ async function renderHtmlForJob(job: PrintJobDto): Promise<RenderedHtml> {
     return {
       html: await renderManualReceiptHtml(payload, bridgeEnv.LABEL_SIZE),
       renderer: 'renderManualReceiptHtml',
+    };
+  }
+  if (job.type === 'OFFLINE_RETURN_SLIP') {
+    const payload = parseManualReceiptReturnSlipPayload(job.payload);
+    if (payload.templateVersion !== 'manual-return-slip-v1') {
+      throw new Error(`template mismatch for OFFLINE_RETURN_SLIP: ${payload.templateVersion}`);
+    }
+    return {
+      html: await renderManualReceiptReturnSlipHtml(payload, bridgeEnv.LABEL_SIZE),
+      renderer: 'renderManualReceiptReturnSlipHtml',
     };
   }
   throw new Error(`unsupported print job type: ${job.type}`);
@@ -166,14 +178,16 @@ export async function buildDiagnostic(): Promise<Record<string, unknown>> {
 }
 
 export interface JobDispatch {
-  requestedTemplate: 'manual-receipt' | 'online-order-label' | 'test-label';
-  renderer: 'renderManualReceiptHtml' | 'renderOnlineOrderHtml' | 'renderTestLabel';
+  requestedTemplate: 'manual-receipt' | 'online-order-label' | 'test-label' | 'manual-return-slip';
+  renderer: 'renderManualReceiptHtml' | 'renderManualReceiptReturnSlipHtml' | 'renderOnlineOrderHtml' | 'renderTestLabel';
 }
 
 export function dispatchForJobType(type: PrintJobDto['type']): JobDispatch {
   switch (type) {
     case 'OFFLINE_CUSTOMER_SLIP':
       return { requestedTemplate: 'manual-receipt', renderer: 'renderManualReceiptHtml' };
+    case 'OFFLINE_RETURN_SLIP':
+      return { requestedTemplate: 'manual-return-slip', renderer: 'renderManualReceiptReturnSlipHtml' };
     case 'ORDER_LABEL':
       return { requestedTemplate: 'online-order-label', renderer: 'renderOnlineOrderHtml' };
     case 'TEST_LABEL':

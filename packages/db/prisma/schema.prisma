@@ -83,6 +83,7 @@ enum StockMovementType {
   MANUAL_ADJUSTMENT
   ORDER_DEDUCTION
   MANUAL_RECEIPT_DEDUCTION
+  MANUAL_RECEIPT_RETURN
   ORDER_CANCELLATION_RELEASE
   CORRECTION
 }
@@ -94,9 +95,31 @@ enum PaymentMode {
   PAY_LATER
 }
 
+enum ManualReceiptStatus {
+  ACTIVE
+  PARTIALLY_RETURNED
+  RETURNED
+  VOIDED
+}
+
+enum ReceiptReturnStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+enum RefundMethod {
+  CASH
+  BANK_TRANSFER
+  UPI
+  STORE_CREDIT
+  NO_REFUND
+}
+
 enum PrintJobType {
   ORDER_LABEL
   OFFLINE_CUSTOMER_SLIP
+  OFFLINE_RETURN_SLIP
   PRODUCT_BARCODE
   TEST_LABEL
 }
@@ -161,9 +184,10 @@ model ProductVariant {
   priceOverride Decimal? @db.Decimal(10, 2)
   isActive      Boolean  @default(true)
 
-  product            Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product            Product                   @relation(fields: [productId], references: [id], onDelete: Cascade)
   orderItems         OrderItem[]
   manualReceiptItems ManualReceiptItem[]
+  manualReturnItems  ManualReceiptReturnItem[]
   stockMovements     StockMovement[]
 
   @@unique([productId, size, color])
@@ -316,10 +340,13 @@ model AdminUser {
   role         AdminRole @default(OWNER)
   createdAt    DateTime  @default(now())
 
-  stockMovements StockMovement[]
-  manualReceipts ManualReceipt[]
-  approvedOrders Order[]         @relation("OrderApprovedBy")
-  rejectedOrders Order[]         @relation("OrderRejectedBy")
+  stockMovements          StockMovement[]
+  manualReceipts          ManualReceipt[]
+  manualReceiptReturns    ManualReceiptReturn[] @relation("ManualReceiptReturnCreatedBy")
+  cancelledReceiptReturns ManualReceiptReturn[] @relation("ManualReceiptReturnCancelledBy")
+  approvedOrders          Order[]               @relation("OrderApprovedBy")
+  rejectedOrders          Order[]               @relation("OrderRejectedBy")
+  auditLogs               AuditLog[]
 }
 
 model AdminSession {
@@ -338,55 +365,61 @@ model Setting {
 }
 
 model StockMovement {
-  id               String            @id @default(cuid())
-  productVariantId String
-  type             StockMovementType
-  quantityChange   Int
-  previousStock    Int
-  newStock         Int
-  orderId          String?
-  manualReceiptId  String?
-  adminUserId      String?
-  note             String?
-  createdAt        DateTime          @default(now())
+  id                    String            @id @default(cuid())
+  productVariantId      String
+  type                  StockMovementType
+  quantityChange        Int
+  previousStock         Int
+  newStock              Int
+  orderId               String?
+  manualReceiptId       String?
+  manualReceiptReturnId String?
+  adminUserId           String?
+  note                  String?
+  createdAt             DateTime          @default(now())
 
-  productVariant ProductVariant @relation(fields: [productVariantId], references: [id], onDelete: Restrict)
-  order          Order?         @relation(fields: [orderId], references: [id], onDelete: SetNull)
-  manualReceipt  ManualReceipt? @relation(fields: [manualReceiptId], references: [id], onDelete: SetNull)
-  adminUser      AdminUser?     @relation(fields: [adminUserId], references: [id], onDelete: SetNull)
+  productVariant      ProductVariant       @relation(fields: [productVariantId], references: [id], onDelete: Restrict)
+  order               Order?               @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  manualReceipt       ManualReceipt?       @relation(fields: [manualReceiptId], references: [id], onDelete: SetNull)
+  manualReceiptReturn ManualReceiptReturn? @relation(fields: [manualReceiptReturnId], references: [id], onDelete: SetNull)
+  adminUser           AdminUser?           @relation(fields: [adminUserId], references: [id], onDelete: SetNull)
 
   @@index([productVariantId])
   @@index([orderId])
   @@index([manualReceiptId])
+  @@index([manualReceiptReturnId])
   @@index([adminUserId])
   @@index([type])
   @@index([createdAt])
 }
 
 model ManualReceipt {
-  id             String      @id @default(cuid())
-  receiptNumber  String      @unique
+  id             String              @id @default(cuid())
+  receiptNumber  String              @unique
   customerName   String?
   customerPhone  String?
-  subtotal       Decimal     @db.Decimal(12, 2)
-  deliveryCharge Decimal     @default(0) @db.Decimal(10, 2)
-  discount       Decimal     @default(0) @db.Decimal(10, 2)
-  totalAmount    Decimal     @db.Decimal(12, 2)
+  subtotal       Decimal             @db.Decimal(12, 2)
+  deliveryCharge Decimal             @default(0) @db.Decimal(10, 2)
+  discount       Decimal             @default(0) @db.Decimal(10, 2)
+  totalAmount    Decimal             @db.Decimal(12, 2)
+  status         ManualReceiptStatus @default(ACTIVE)
   paymentMode    PaymentMode
   notes          String?
   createdById    String
   printedAt      DateTime?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
 
-  createdBy      AdminUser           @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdBy      AdminUser             @relation(fields: [createdById], references: [id], onDelete: Restrict)
   items          ManualReceiptItem[]
+  returns        ManualReceiptReturn[]
   stockMovements StockMovement[]
 
   @@index([receiptNumber])
   @@index([createdById])
   @@index([createdAt])
   @@index([paymentMode])
+  @@index([status])
 }
 
 model ManualReceiptItem {
@@ -396,11 +429,74 @@ model ManualReceiptItem {
   quantity         Int
   unitPrice        Decimal @db.Decimal(10, 2)
 
-  manualReceipt ManualReceipt  @relation(fields: [manualReceiptId], references: [id], onDelete: Cascade)
-  variant       ProductVariant @relation(fields: [productVariantId], references: [id], onDelete: Restrict)
+  manualReceipt ManualReceipt             @relation(fields: [manualReceiptId], references: [id], onDelete: Cascade)
+  variant       ProductVariant            @relation(fields: [productVariantId], references: [id], onDelete: Restrict)
+  returnItems   ManualReceiptReturnItem[]
 
   @@index([manualReceiptId])
   @@index([productVariantId])
+}
+
+model ManualReceiptReturn {
+  id             String              @id @default(uuid())
+  receiptId      String
+  status         ReceiptReturnStatus @default(COMPLETED)
+  reason         String
+  refundMethod   RefundMethod
+  refundAmount   Decimal             @db.Decimal(12, 2)
+  notes          String?
+  idempotencyKey String?             @unique
+  createdById    String
+  createdAt      DateTime            @default(now())
+  cancelledAt    DateTime?
+  cancelledById  String?
+
+  receipt        ManualReceipt             @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  createdBy      AdminUser                 @relation("ManualReceiptReturnCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  cancelledBy    AdminUser?                @relation("ManualReceiptReturnCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+  items          ManualReceiptReturnItem[]
+  stockMovements StockMovement[]
+
+  @@index([receiptId])
+  @@index([createdById])
+  @@index([cancelledById])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ManualReceiptReturnItem {
+  id                  String  @id @default(uuid())
+  returnId            String
+  manualReceiptItemId String
+  productVariantId    String?
+  quantity            Int
+  unitAmount          Decimal @db.Decimal(10, 2)
+  refundAmount        Decimal @db.Decimal(12, 2)
+
+  return      ManualReceiptReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  receiptItem ManualReceiptItem   @relation(fields: [manualReceiptItemId], references: [id], onDelete: Restrict)
+  variant     ProductVariant?     @relation(fields: [productVariantId], references: [id], onDelete: SetNull)
+
+  @@index([returnId])
+  @@index([manualReceiptItemId])
+  @@index([productVariantId])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  action      String
+  entityType  String
+  entityId    String
+  actorUserId String?
+  payload     Json
+  createdAt   DateTime @default(now())
+
+  actor AdminUser? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([actorUserId])
+  @@index([createdAt])
 }
 
 // =============================================================================
