@@ -41,6 +41,17 @@ export class ApiError extends Error {
   }
 }
 
+export function apiErrorMessage(error: unknown, fallback: string): string {
+  if (!(error instanceof ApiError)) return fallback;
+  try {
+    const parsed = JSON.parse(error.body) as { error?: string; message?: string; errorId?: string };
+    const message = parsed.message || parsed.error || fallback;
+    return parsed.errorId ? `${message} (${parsed.errorId})` : message;
+  } catch {
+    return error.body || fallback;
+  }
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>

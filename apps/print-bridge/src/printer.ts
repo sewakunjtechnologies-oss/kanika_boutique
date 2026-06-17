@@ -4,9 +4,10 @@ import path from 'node:path';
 import { getDefaultPrinter, getPrinters, print } from 'pdf-to-printer';
 import type { PrintOptions } from 'pdf-to-printer';
 import {
-  LabelPayload,
   LabelProfile,
   parseLabelPayload,
+  parseOfflineCustomerSlipPayload,
+  renderOfflineCustomerSlip,
   renderOrderLabel,
   resolveLabelProfile,
   validateLabelPdfSize,
@@ -15,10 +16,9 @@ import { bridgeEnv, outputPath } from './config';
 import type { PrintJobDto } from './backendClient';
 
 export async function renderJobPdf(job: PrintJobDto): Promise<string> {
-  const payload = payloadForJob(job);
   const profile = selectedBridgeProfile();
-  logRenderDiagnostics();
-  const pdf = await renderOrderLabel({ ...payload, labelProfile: profile.name }, profile);
+  logRenderDiagnostics(job);
+  const pdf = await renderPdfForJob(job, profile);
   const validation = validateLabelPdfSize(pdf, profile, 0.6);
   if (!validation.ok) {
     throw new Error(`generated PDF size mismatch: ${validation.reason ?? 'unknown'}`);
@@ -28,6 +28,18 @@ export async function renderJobPdf(job: PrintJobDto): Promise<string> {
   const filePath = outputPath(filename);
   await fs.writeFile(filePath, pdf);
   return filePath;
+}
+
+async function renderPdfForJob(job: PrintJobDto, profile: LabelProfile): Promise<Buffer> {
+  if (job.type === 'ORDER_LABEL' || job.type === 'TEST_LABEL') {
+    const payload = parseLabelPayload(job.payload);
+    return renderOrderLabel({ ...payload, labelProfile: profile.name }, profile);
+  }
+  if (job.type === 'OFFLINE_CUSTOMER_SLIP') {
+    const payload = parseOfflineCustomerSlipPayload(job.payload);
+    return renderOfflineCustomerSlip({ ...payload, labelProfile: 'compact_96x68' }, profile);
+  }
+  throw new Error(`unsupported print job type: ${job.type}`);
 }
 
 export async function printPdf(filePath: string): Promise<void> {
@@ -115,34 +127,26 @@ export async function buildDiagnostic(): Promise<Record<string, unknown>> {
   };
 }
 
-function payloadForJob(job: PrintJobDto): LabelPayload {
-  if (job.type === 'ORDER_LABEL' || job.type === 'TEST_LABEL') {
-    return parseLabelPayload(job.payload);
-  }
-  throw new Error(`unsupported print job type: ${job.type}`);
-}
-
 function selectedBridgeProfile(): LabelProfile {
   const base = resolveLabelProfile(bridgeEnv.LABEL_PROFILE);
   return resolveLabelProfile(base, {
     widthMm: bridgeEnv.LABEL_WIDTH_MM ?? base.widthMm,
     heightMm: bridgeEnv.LABEL_HEIGHT_MM ?? base.heightMm,
-    designWidthMm: bridgeEnv.DESIGN_WIDTH_MM ?? base.designWidthMm,
-    designHeightMm: bridgeEnv.DESIGN_HEIGHT_MM ?? base.designHeightMm,
     orientation: bridgeEnv.PRINT_ORIENTATION,
     rotation: bridgeEnv.PRINT_ROTATION,
   });
 }
 
 /**
- * Renderer/printer diagnostics. There is exactly one rotation layer: the
- * renderer applies `rendererRotation` (90 for the rotated profile); the PDF
- * page metadata stays 0; Windows prints Portrait / Normal at 100% with no
- * rotation, fit, or scaling.
+ * Renderer/printer diagnostics. The current 4BARCODE media profile keeps all
+ * rotation values at 0: the PDF page is physically 101.6 x 76.2 mm, and
+ * Windows prints Portrait / Normal at 100% with no fit or auto-rotation.
  */
-export function renderDiagnostics(): Record<string, string | number | boolean> {
+export function renderDiagnostics(job?: PrintJobDto): Record<string, string | number | boolean> {
   const profile = selectedBridgeProfile();
   return {
+    jobType: job?.type ?? 'unknown',
+    receiptId: job?.type === 'OFFLINE_CUSTOMER_SLIP' ? String((job.payload as { receiptId?: unknown }).receiptId ?? '') : '',
     profile: profile.name,
     physicalPage: `${profile.widthMm}x${profile.heightMm}mm`,
     logicalCanvas: `${profile.designWidthMm}x${profile.designHeightMm}mm`,
@@ -156,11 +160,13 @@ export function renderDiagnostics(): Record<string, string | number | boolean> {
   };
 }
 
-function logRenderDiagnostics(): void {
-  const d = renderDiagnostics();
+function logRenderDiagnostics(job: PrintJobDto): void {
+  const d = renderDiagnostics(job);
   // eslint-disable-next-line no-console
   console.log(
     [
+      `jobType=${d.jobType}`,
+      d.receiptId ? `receiptId=${d.receiptId}` : '',
       `profile=${d.profile}`,
       `physicalPage=${d.physicalPage}`,
       `logicalCanvas=${d.logicalCanvas}`,
@@ -171,6 +177,6 @@ function logRenderDiagnostics(): void {
       `scale=${d.scale}`,
       `selectedPrinter=${d.selectedPrinter}`,
       `dryRun=${d.dryRun}`,
-    ].join('\n'),
+    ].filter(Boolean).join('\n'),
   );
 }

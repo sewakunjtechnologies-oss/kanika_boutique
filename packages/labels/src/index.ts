@@ -5,4 +5,5 @@
 export * from './profiles';
 export * from './payload';
 export * from './renderer';
+export * from './offlineCustomerSlip';
 export * from './validate';

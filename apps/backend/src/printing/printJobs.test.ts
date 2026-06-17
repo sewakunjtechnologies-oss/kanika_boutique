@@ -1,6 +1,11 @@
-import { describe, expect, test, vi } from 'vitest';
-import { OrderStatus, PrintJobStatus, PrintJobType } from '@kda/db';
-import { buildOrderLabelPayload, createAutomaticOrderLabelJob } from './printJobs';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import { OrderStatus, PrintJobStatus, PrintJobType, prisma } from '@kda/db';
+import {
+  buildManualReceiptSlipPayload,
+  buildOrderLabelPayload,
+  createAutomaticOrderLabelJob,
+  createManualReceiptSlipJob,
+} from './printJobs';
 
 const order = {
   id: 'order_123',
@@ -27,7 +32,34 @@ const order = {
   ],
 };
 
+const receipt = {
+  id: 'receipt_123',
+  receiptNumber: 'MR-2026-0001',
+  customerName: 'test-1',
+  customerPhone: '917400000041',
+  subtotal: { toString: () => '1760.00' },
+  deliveryCharge: { toString: () => '100.00' },
+  discount: { toString: () => '0.00' },
+  totalAmount: { toString: () => '1860.00' },
+  paymentMode: 'CASH',
+  createdAt: new Date('2026-06-17T10:09:00.000Z'),
+  items: [
+    {
+      quantity: 1,
+      unitPrice: { toString: () => '1760.00' },
+      variant: {
+        size: '38',
+        product: { name: 'Three-piece Kurti', sku: 'three-piece-kurtis-mq6b1e77' },
+      },
+    },
+  ],
+};
+
 describe('print jobs', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   test('builds a compact masked order label payload', () => {
     const payload = buildOrderLabelPayload(order);
 
@@ -38,7 +70,7 @@ describe('print jobs', () => {
     expect(payload.addressLine2).toBe('Near Market');
     expect(payload.city).toBe('Sonipat');
     expect(payload.state).toBe('Haryana');
-    expect(payload.labelProfile).toBe('4x3');
+    expect(payload.labelProfile).toBe('compact_96x68');
     expect(payload.productName).toBe('Blue Floral Pure Cotton Suit');
     expect(payload.sku).toBe('ARTICLE-1');
     expect(payload.size).toBe('40');
@@ -75,5 +107,78 @@ describe('print jobs', () => {
 
     expect(result).toBeNull();
     expect(upsert).not.toHaveBeenCalled();
+  });
+
+  test('builds a manual receipt slip payload with serializable money values', () => {
+    const payload = buildManualReceiptSlipPayload(receipt);
+
+    expect(payload.receiptId).toBe('MR-2026-0001');
+    expect(payload.customerName).toBe('test-1');
+    expect(payload.phoneMasked).toBe('74XXXXXXXX41');
+    expect(payload.subtotal).toBe(1760);
+    expect(payload.delivery).toBe(100);
+    expect(payload.discount).toBe(0);
+    expect(payload.total).toBe(1860);
+    expect(payload.items[0]).toMatchObject({
+      name: 'Three-piece Kurti',
+      sku: 'three-piece-kurtis-mq6b1e77',
+      size: '38',
+      quantity: 1,
+      unitPrice: 1760,
+      amount: 1760,
+    });
+    expect(payload.labelProfile).toBe('compact_96x68');
+  });
+
+  test('existing manual receipt creates an OFFLINE_CUSTOMER_SLIP job', async () => {
+    vi.spyOn(prisma.manualReceipt, 'findUnique').mockResolvedValue(receipt as never);
+    vi.spyOn(prisma.printJob, 'findUnique').mockResolvedValue(null);
+    const create = vi.spyOn(prisma.printJob, 'create').mockResolvedValue({
+      id: 'job_receipt',
+      type: PrintJobType.OFFLINE_CUSTOMER_SLIP,
+      status: PrintJobStatus.PENDING,
+    } as never);
+
+    const result = await createManualReceiptSlipJob({ receiptId: receipt.id, requestedBy: 'admin_1' });
+
+    expect(result?.created).toBe(true);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]?.[0].data.type).toBe(PrintJobType.OFFLINE_CUSTOMER_SLIP);
+    expect(create.mock.calls[0]?.[0].data.idempotencyKey).toBe('MANUAL_RECEIPT:receipt_123:INITIAL');
+  });
+
+  test('missing manual receipt returns null', async () => {
+    vi.spyOn(prisma.manualReceipt, 'findUnique').mockResolvedValue(null);
+
+    const result = await createManualReceiptSlipJob({ receiptId: 'missing', requestedBy: 'admin_1' });
+
+    expect(result).toBeNull();
+  });
+
+  test('double-click initial print does not create a duplicate job', async () => {
+    const existingJob = { id: 'existing_job', status: PrintJobStatus.PENDING };
+    vi.spyOn(prisma.manualReceipt, 'findUnique').mockResolvedValue(receipt as never);
+    vi.spyOn(prisma.printJob, 'findUnique').mockResolvedValue(existingJob as never);
+    const create = vi.spyOn(prisma.printJob, 'create');
+
+    const result = await createManualReceiptSlipJob({ receiptId: receipt.id, requestedBy: 'admin_1' });
+
+    expect(result?.created).toBe(false);
+    expect(result?.job).toBe(existingJob);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  test('manual receipt reprint creates a fresh job', async () => {
+    vi.spyOn(prisma.manualReceipt, 'findUnique').mockResolvedValue(receipt as never);
+    const create = vi.spyOn(prisma.printJob, 'create').mockResolvedValue({
+      id: 'reprint_job',
+      type: PrintJobType.OFFLINE_CUSTOMER_SLIP,
+      status: PrintJobStatus.PENDING,
+    } as never);
+
+    await createManualReceiptSlipJob({ receiptId: receipt.id, requestedBy: 'admin_1', reprint: true });
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(String(create.mock.calls[0]?.[0].data.idempotencyKey)).toContain('MANUAL_RECEIPT:receipt_123:REPRINT:');
   });
 });

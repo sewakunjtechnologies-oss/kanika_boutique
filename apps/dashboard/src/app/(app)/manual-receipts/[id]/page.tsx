@@ -14,7 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { api, BACKEND_BASE_URL } from '@/lib/api';
+import { api, apiErrorMessage } from '@/lib/api';
 import { formatCurrency, formatDate } from '@/lib/utils';
 
 interface ReceiptDetail {
@@ -45,9 +45,9 @@ interface ReceiptDetail {
 
 interface PrintResult {
   ok: boolean;
-  mode: 'manual' | 'printnode';
-  pdfUrl: string;
-  printJobId: number | null;
+  printJobId: string;
+  status: string;
+  created: boolean;
   message: string;
 }
 
@@ -74,8 +74,8 @@ export default function ManualReceiptDetailPage(): React.ReactElement {
       const result = await api.post<PrintResult>(`/api/manual-receipts/${receipt.id}/print`);
       showPrintResult(result);
       await load();
-    } catch {
-      toast.error('Print failed');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Print failed'));
     } finally {
       setBusy(false);
     }
@@ -95,7 +95,7 @@ export default function ManualReceiptDetailPage(): React.ReactElement {
             Back
           </Button>
           <Button onClick={print} disabled={busy}>
-            <Printer size={16} className="mr-2" /> Print Receipt
+            <Printer size={16} className="mr-2" /> {busy ? 'Queuing…' : 'Print Receipt'}
           </Button>
         </div>
       </div>
@@ -183,8 +183,5 @@ function Row({ label, value, bold }: { label: string; value: string; bold?: bool
 }
 
 function showPrintResult(result: PrintResult): void {
-  if (result.pdfUrl) {
-    window.open(`${BACKEND_BASE_URL}${result.pdfUrl}`, '_blank', 'noopener,noreferrer');
-  }
-  toast.success(result.message || (result.mode === 'printnode' ? 'Print job queued' : 'PDF generated'));
+  toast.success(`${result.message || 'Print job created'}: ${result.status}`);
 }

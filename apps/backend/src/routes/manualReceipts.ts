@@ -5,7 +5,7 @@ import { calculateDeliveryCharge } from '@kda/shared';
 import { requireAuth, requireManagerOrOwner } from '../auth/middleware';
 import { recordStockMovement } from '../chatbot/orderService';
 import { emitToDashboard } from '../realtime/io';
-import { printSource } from '../printing/printNodeClient';
+import { createManualReceiptSlipJob } from '../printing/printJobs';
 import { logger } from '../logger';
 
 export const manualReceiptsRouter = Router();
@@ -25,6 +25,10 @@ const CreateManualReceiptSchema = z.object({
   discount: z.number().nonnegative().default(0),
   paymentMode: z.nativeEnum(PaymentMode),
   notes: z.string().max(1000).optional().nullable(),
+});
+
+const PrintManualReceiptSchema = z.object({
+  reprint: z.boolean().optional().default(false),
 });
 
 manualReceiptsRouter.get('/manual-receipts', requireManagerOrOwner, async (req: Request, res: Response): Promise<void> => {
@@ -169,16 +173,38 @@ manualReceiptsRouter.post('/manual-receipts', requireManagerOrOwner, async (req:
 });
 
 manualReceiptsRouter.post('/manual-receipts/:id/print', requireManagerOrOwner, async (req: Request, res: Response): Promise<void> => {
+  const parsed = PrintManualReceiptSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: 'invalid_input', fields: parsed.error.flatten().fieldErrors });
+    return;
+  }
+
   try {
-    const printResult = await printSource({ sourceType: 'MANUAL_RECEIPT', sourceId: req.params.id as string });
-    await prisma.manualReceipt.update({
-      where: { id: req.params.id as string },
-      data: { printedAt: new Date() },
+    const result = await createManualReceiptSlipJob({
+      receiptId: req.params.id as string,
+      requestedBy: req.auth!.sub,
+      reprint: parsed.data.reprint,
     });
-    res.json(printResult);
+    if (!result) {
+      res.status(404).json({ error: 'receipt_not_found' });
+      return;
+    }
+    emitToDashboard('printer_status_changed', {
+      pendingJobId: result.job.id,
+      manualReceiptId: req.params.id,
+      created: result.created,
+    });
+    res.status(result.created ? 201 : 200).json({
+      ok: true,
+      printJobId: result.job.id,
+      status: result.job.status,
+      created: result.created,
+      message: result.created ? 'Print job created' : 'Print job already exists',
+    });
   } catch (err) {
-    logger.error({ err, manualReceiptId: req.params.id }, 'manual receipt print failed');
-    res.status(500).json({ error: 'print_failed' });
+    const errorId = `print_${Date.now().toString(36)}`;
+    logger.error({ err, manualReceiptId: req.params.id, errorId }, 'manual receipt print failed');
+    res.status(500).json({ error: 'manual_receipt_print_failed', errorId });
   }
 });
 

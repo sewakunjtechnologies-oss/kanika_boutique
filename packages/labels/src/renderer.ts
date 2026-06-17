@@ -7,6 +7,7 @@ import {
   LabelProfile,
   LabelProfileInput,
   LabelProfileName,
+  getContentBox,
   mmToPt,
   normalizeLabelProfileName,
   resolveLabelProfile,
@@ -27,7 +28,7 @@ export interface LabelLayout {
   physicalHeightPt: number;
   /**
    * Logical design-canvas dimensions in points. All content below is laid out
-   * in this space; for a rotated profile it differs from the physical page.
+   * in this space; compact profiles center this canvas inside the physical page.
    */
   pageWidthPt: number;
   pageHeightPt: number;
@@ -42,13 +43,16 @@ export interface LabelLayout {
   barcodeTopPt: number;
   barcodeBottomPt: number;
   physicalBottomSafePt: number;
+  contentOffsetXPt: number;
+  contentOffsetYPt: number;
   overflows: boolean;
 }
 
 export function computeLabelLayout(payload: LabelPayload, profileInput: LabelProfileInput): LabelLayout {
   const profile = resolveLabelProfile(profileInput);
+  const contentBox = getContentBox(profile);
   // Physical page = PDF MediaBox the printer receives. Logical canvas = the
-  // space content is laid out in (portrait for a rotated profile).
+  // centered content box where the label design is laid out.
   const physicalWidthPt = mmToPt(profile.widthMm);
   const physicalHeightPt = mmToPt(profile.heightMm);
   const pageWidthPt = mmToPt(profile.designWidthMm);
@@ -85,6 +89,8 @@ export function computeLabelLayout(payload: LabelPayload, profileInput: LabelPro
     barcodeTopPt,
     barcodeBottomPt,
     physicalBottomSafePt,
+    contentOffsetXPt: mmToPt(contentBox.offsetXmm),
+    contentOffsetYPt: mmToPt(contentBox.offsetYmm),
     overflows:
       bodyBottomPt > barcodeAreaTopPt - mmToPt(1) ||
       barcodeAreaBottomPt > physicalBottomSafePt + 0.5 ||
@@ -117,8 +123,7 @@ export class PdfLabelRenderer implements LabelRenderer {
 
     const barcode = await renderCode128BarcodePng(payload.barcodeValue, layout.profile.barcodeHeightMm);
     // The PDF page is the PHYSICAL stock. Content is laid out in the logical
-    // canvas and (for a rotated profile) mapped onto the page by a single
-    // renderer-side transform below — the page itself carries no /Rotate.
+    // canvas centered on that page. The page itself carries no /Rotate.
     const doc = new PDFDocument({
       size: [layout.physicalWidthPt, layout.physicalHeightPt],
       margin: 0,
@@ -138,18 +143,11 @@ export class PdfLabelRenderer implements LabelRenderer {
       doc.on('error', reject);
     });
 
-    // Exactly one rotation layer. When rendererRotation is 90, the logical
-    // portrait canvas (pageWidthPt x pageHeightPt) is rotated a quarter turn so
-    // it covers the landscape physical page (physicalWidthPt x physicalHeightPt)
-    // with every corner inside [0,physicalWidthPt] x [0,physicalHeightPt].
-    //
-    //   logical (lx, ly)  ->  physical (ly, physicalHeightPt - lx)
-    //
-    // i.e. the PDF cm matrix [0 -1 1 0 0 physicalHeightPt].
+    doc.rect(0, 0, layout.physicalWidthPt, layout.physicalHeightPt).fill('#FFFFFF');
+    doc.fillColor(BLACK).strokeColor(BLACK);
+
     doc.save();
-    if (layout.profile.rendererRotation === 90) {
-      doc.transform(0, -1, 1, 0, 0, layout.physicalHeightPt);
-    }
+    doc.translate(layout.contentOffsetXPt, layout.contentOffsetYPt);
 
     doc.rect(0, 0, layout.pageWidthPt, layout.pageHeightPt).fill('#FFFFFF');
     doc.fillColor(BLACK).strokeColor(BLACK);
@@ -353,7 +351,7 @@ function twoColumnText(
 
 /** Every profile except the wide 4x3 lays content out as a portrait column. */
 function isPortraitLayout(profile: LabelProfile): boolean {
-  return profile.name !== '4x3';
+  return profile.name === '4x4_portrait';
 }
 
 function estimateWide4x3BodyBottomPt(topPt: number): number {

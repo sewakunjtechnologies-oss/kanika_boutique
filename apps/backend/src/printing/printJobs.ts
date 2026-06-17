@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   prisma,
   OrderStatus,
@@ -8,9 +9,10 @@ import {
   autoOrderLabelIdempotencyKey,
   maskPhone,
   parseLabelPayload,
+  parseOfflineCustomerSlipPayload,
 } from '@kda/labels';
 import type { Prisma, PrintJob } from '@kda/db';
-import type { LabelPayload } from '@kda/labels';
+import type { LabelPayload, OfflineCustomerSlipPayload } from '@kda/labels';
 import { env } from '../config/env';
 
 type Tx = Prisma.TransactionClient;
@@ -37,6 +39,35 @@ interface OrderForLabel {
       };
     };
   }[];
+}
+
+interface ManualReceiptForSlip {
+  id: string;
+  receiptNumber: string;
+  customerName: string | null;
+  customerPhone: string | null;
+  subtotal: { toString(): string };
+  deliveryCharge: { toString(): string };
+  discount: { toString(): string };
+  totalAmount: { toString(): string };
+  paymentMode: string;
+  createdAt: Date;
+  items: {
+    quantity: number;
+    unitPrice: { toString(): string };
+    variant: {
+      size: string;
+      product: {
+        name: string;
+        sku: string;
+      };
+    };
+  }[];
+}
+
+export interface PrintJobCreateResult {
+  job: PrintJob;
+  created: boolean;
 }
 
 export async function createAutomaticOrderLabelJob(tx: Tx, orderId: string): Promise<PrintJob | null> {
@@ -115,7 +146,7 @@ export async function createTestLabelJob(requestedBy = 'print-agent'): Promise<P
     amount: 2270,
     barcodeValue: 'KD-TEST-1001',
     addressLine: 'H.No. 25, Sector 14',
-    labelProfile: '4x3',
+    labelProfile: 'compact_96x68',
   };
 
   return prisma.printJob.create({
@@ -126,6 +157,62 @@ export async function createTestLabelJob(requestedBy = 'print-agent'): Promise<P
       idempotencyKey: `TEST_LABEL:${requestedBy}:${Date.now()}`,
     },
   });
+}
+
+export async function createManualReceiptSlipJob(input: {
+  receiptId: string;
+  requestedBy: string;
+  reprint?: boolean;
+}): Promise<PrintJobCreateResult | null> {
+  const receipt = await prisma.manualReceipt.findUnique({
+    where: { id: input.receiptId },
+    include: {
+      items: {
+        include: {
+          variant: { include: { product: { select: { name: true, sku: true } } } },
+        },
+      },
+    },
+  });
+  if (!receipt) return null;
+
+  const payload = buildManualReceiptSlipPayload(receipt);
+  const idempotencyKey = input.reprint
+    ? `MANUAL_RECEIPT:${receipt.id}:REPRINT:${Date.now()}:${randomUUID()}`
+    : `MANUAL_RECEIPT:${receipt.id}:INITIAL`;
+
+  if (input.reprint) {
+    const job = await prisma.printJob.create({
+      data: {
+        type: PrintJobType.OFFLINE_CUSTOMER_SLIP,
+        status: PrintJobStatus.PENDING,
+        payload: payload as never,
+        idempotencyKey,
+      },
+    });
+    return { job, created: true };
+  }
+
+  const existing = await prisma.printJob.findUnique({ where: { idempotencyKey } });
+  if (existing) return { job: existing, created: false };
+
+  try {
+    const job = await prisma.printJob.create({
+      data: {
+        type: PrintJobType.OFFLINE_CUSTOMER_SLIP,
+        status: PrintJobStatus.PENDING,
+        payload: payload as never,
+        idempotencyKey,
+      },
+    });
+    return { job, created: true };
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      const job = await prisma.printJob.findUnique({ where: { idempotencyKey } });
+      if (job) return { job, created: false };
+    }
+    throw err;
+  }
 }
 
 export async function claimNextPrintJob(deviceId: string): Promise<PrintJob | null> {
@@ -204,6 +291,13 @@ export async function markPrintJobPrinted(id: string, deviceId: string): Promise
       data: { status: OrderStatus.PRINTED, printedAt: new Date() },
     });
   }
+  if (job?.type === PrintJobType.OFFLINE_CUSTOMER_SLIP) {
+    const payload = parseOfflineCustomerSlipPayload(job.payload);
+    await prisma.manualReceipt.updateMany({
+      where: { receiptNumber: payload.receiptId },
+      data: { printedAt: new Date() },
+    });
+  }
   return job;
 }
 
@@ -225,6 +319,10 @@ export async function markPrintJobFailed(id: string, deviceId: string, error: st
 
 export function parsePrintJobPayload(job: Pick<PrintJob, 'payload'>): LabelPayload {
   return parseLabelPayload(job.payload);
+}
+
+export function parseOfflineSlipPrintJobPayload(job: Pick<PrintJob, 'payload'>): OfflineCustomerSlipPayload {
+  return parseOfflineCustomerSlipPayload(job.payload);
 }
 
 export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
@@ -255,8 +353,34 @@ export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
     addressLine2: address.addressLine2,
     city: order.shippingCity,
     state: order.shippingState,
-    labelProfile: '4x3',
+    labelProfile: 'compact_96x68',
   };
+}
+
+export function buildManualReceiptSlipPayload(receipt: ManualReceiptForSlip): OfflineCustomerSlipPayload {
+  const payload: OfflineCustomerSlipPayload = {
+    storeName: env.BUSINESS_NAME,
+    receiptId: receipt.receiptNumber,
+    customerName: receipt.customerName?.trim() || 'Walk-in customer',
+    phoneMasked: maskPhone(receipt.customerPhone),
+    createdAt: receipt.createdAt.toISOString(),
+    paymentMethod: receipt.paymentMode,
+    subtotal: moneyNumber(receipt.subtotal),
+    delivery: moneyNumber(receipt.deliveryCharge),
+    discount: moneyNumber(receipt.discount),
+    total: moneyNumber(receipt.totalAmount),
+    items: receipt.items.map((item) => ({
+      name: item.variant.product.name,
+      sku: item.variant.product.sku,
+      size: item.variant.size,
+      quantity: item.quantity,
+      unitPrice: moneyNumber(item.unitPrice),
+      amount: moneyNumber(item.unitPrice) * item.quantity,
+    })),
+    barcodeValue: receipt.receiptNumber,
+    labelProfile: 'compact_96x68',
+  };
+  return parseOfflineCustomerSlipPayload(payload);
 }
 
 function splitShippingAddress(value: string): { addressLine1: string; addressLine2: string } {
@@ -273,4 +397,18 @@ function splitShippingAddress(value: string): { addressLine1: string; addressLin
 
 function paymentIdentifier(order: Pick<OrderForLabel, 'id' | 'paymentExtractedUtr' | 'paymentScreenshotUrl'>): string {
   return order.paymentExtractedUtr || order.paymentScreenshotUrl || order.id;
+}
+
+function moneyNumber(value: { toString(): string }): number {
+  const numberValue = Number(value.toString());
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function isUniqueConstraintError(err: unknown): boolean {
+  return Boolean(
+    err &&
+      typeof err === 'object' &&
+      'code' in err &&
+      (err as { code?: string }).code === 'P2002',
+  );
 }

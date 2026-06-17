@@ -96,7 +96,7 @@ enum PaymentMode {
 
 enum PrintJobType {
   ORDER_LABEL
-  OFFLINE_SLIP
+  OFFLINE_CUSTOMER_SLIP
   PRODUCT_BARCODE
   TEST_LABEL
 }

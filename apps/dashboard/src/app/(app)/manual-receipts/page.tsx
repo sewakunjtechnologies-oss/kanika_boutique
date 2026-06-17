@@ -16,7 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { api, BACKEND_BASE_URL } from '@/lib/api';
+import { api, apiErrorMessage } from '@/lib/api';
 import { formatCurrency, formatDate } from '@/lib/utils';
 
 interface Product {
@@ -52,9 +52,9 @@ interface DraftItem {
 
 interface PrintResult {
   ok: boolean;
-  mode: 'manual' | 'printnode';
-  pdfUrl: string;
-  printJobId: number | null;
+  printJobId: string;
+  status: string;
+  created: boolean;
   message: string;
 }
 
@@ -69,6 +69,7 @@ export default function ManualReceiptsPage(): React.ReactElement {
   const [paymentMode, setPaymentMode] = useState('CASH');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [printingId, setPrintingId] = useState<string | null>(null);
 
   async function load(): Promise<void> {
     const [productRes, receiptRes] = await Promise.all([
@@ -154,11 +155,15 @@ export default function ManualReceiptsPage(): React.ReactElement {
   }
 
   async function printReceipt(id: string): Promise<void> {
+    if (printingId) return;
+    setPrintingId(id);
     try {
       const result = await api.post<PrintResult>(`/api/manual-receipts/${id}/print`);
       showPrintResult(result);
-    } catch {
-      toast.error('Print failed');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Print failed'));
+    } finally {
+      setPrintingId(null);
     }
   }
 
@@ -305,8 +310,13 @@ export default function ManualReceiptsPage(): React.ReactElement {
                   <TableCell>{receipt.paymentMode}</TableCell>
                   <TableCell>{formatDate(receipt.createdAt)}</TableCell>
                   <TableCell className="text-right">
-                    <Button variant="outline" size="sm" onClick={() => printReceipt(receipt.id)}>
-                      <Printer size={14} className="mr-2" /> Print
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => printReceipt(receipt.id)}
+                      disabled={printingId === receipt.id}
+                    >
+                      <Printer size={14} className="mr-2" /> {printingId === receipt.id ? 'Queuing…' : 'Print'}
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -334,8 +344,5 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function showPrintResult(result: PrintResult): void {
-  if (result.pdfUrl) {
-    window.open(`${BACKEND_BASE_URL}${result.pdfUrl}`, '_blank', 'noopener,noreferrer');
-  }
-  toast.success(result.message || (result.mode === 'printnode' ? 'Print job queued' : 'PDF generated'));
+  toast.success(`${result.message || 'Print job created'}: ${result.status}`);
 }

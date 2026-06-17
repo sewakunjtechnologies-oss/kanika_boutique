@@ -30,9 +30,9 @@ const RawLabelPayloadSchema = z.object({
   pincode: z.string().default(''),
   labelProfile: z
     .custom<AnyLabelProfileName>((value) =>
-      ['4x3', '4x3_landscape', '4x4_portrait', '4x4', '4x3_portrait_rotated'].includes(String(value)),
+      ['compact_96x68', '4x3', '4x3_landscape', '4x4_portrait', '4x4'].includes(String(value)),
     )
-    .default('4x3')
+    .default('compact_96x68')
     .transform((value) => normalizeLabelProfileName(value)),
 });
 
