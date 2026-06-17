@@ -1,20 +1,20 @@
 import { bridgeEnv } from './config';
 import { getNextJob, heartbeat, markDryRunCompleted, markFailed, markPrinted, markPrinting } from './backendClient';
-import { printPdf, renderJobPdf } from './printer';
+import { printRenderedHtml, renderJobHtmlFile } from './printer';
 
 let busy = false;
 
-async function tick(): Promise<void> {
-  if (busy) return;
+export async function processNextJob(): Promise<'idle' | 'completed' | 'failed'> {
+  if (busy) return 'idle';
   busy = true;
   try {
     const job = await getNextJob();
-    if (!job) return;
+    if (!job) return 'idle';
 
     try {
-      const pdfPath = await renderJobPdf(job);
+      const rendered = await renderJobHtmlFile(job);
       await markPrinting(job.id);
-      await printPdf(pdfPath);
+      await printRenderedHtml(rendered);
       if (bridgeEnv.PRINT_DRY_RUN) {
         await markDryRunCompleted(job.id);
       } else {
@@ -26,15 +26,18 @@ async function tick(): Promise<void> {
           ? `Dry-run completed for job ${job.id}; no physical print was sent.`
           : `Printed job ${job.id} (${bridgeEnv.PRINTER_NAME})`,
       );
+      return 'completed';
     } catch (err) {
       const message = err instanceof Error ? err.message : 'unknown print error';
       await markFailed(job.id, message).catch(() => undefined);
       // eslint-disable-next-line no-console
       console.error(`Print job ${job.id} failed: ${message}`);
+      return 'failed';
     }
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('Bridge poll failed:', err instanceof Error ? err.message : err);
+    return 'failed';
   } finally {
     busy = false;
   }
@@ -56,7 +59,9 @@ export async function startBridge(): Promise<void> {
   );
   await sendHeartbeat();
   setInterval(() => void sendHeartbeat(), bridgeEnv.HEARTBEAT_INTERVAL_MS);
-  setInterval(() => void tick(), bridgeEnv.POLL_INTERVAL_MS);
+  setInterval(() => void processNextJob(), bridgeEnv.POLL_INTERVAL_MS);
 }
 
-void startBridge();
+if (require.main === module) {
+  void startBridge();
+}

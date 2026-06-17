@@ -252,19 +252,21 @@ npm run preview:online
 npm run preview:test
 npm run bridge:dry-run -- --template=manual-receipt
 npm run bridge:dry-run -- --template=online-order-label
+npm run print:manual
+npm run print:online
 npm run print:test -- --template=manual-receipt
 npm run print:test -- --template=online-order-label
 npm run bridge:start
 ```
 
-For the first physical test, keep `PRINT_DRY_RUN=true` and confirm the HTML/PDF in `apps/print-bridge/print-output`. Then set `PRINT_DRY_RUN=false`, keep the Windows driver on the manually tested 4x3 stock, and run both `print:test` commands above. The bridge does not pass orientation, scaling, fitting, paper-size, or rotation options to Windows.
+For the first physical test, keep `PRINT_DRY_RUN=true` and confirm the generated HTML/PDF preview in `apps/print-bridge/print-output`. Then set `PRINT_DRY_RUN=false`, keep the Windows driver on the manually tested 4x3 stock, and run `npm run print:manual` plus `npm run print:online`. Live printing uses Electron `webContents.print()` on the tested HTML. It does not open Microsoft Edge, the default PDF viewer, a print dialog, or a shell-opened PDF.
 
 Current 4x3 HTML renderer:
 
-- PDF physical page: `101.6 mm x 76.2 mm`
+- HTML/CSS physical page: `101.6 mm x 76.2 mm`
 - HTML/CSS source: tested full-page label CSS
-- PDF rotation metadata: `0`
-- Windows print call: `{ printer: PRINTER_NAME }`
+- Electron page size: `101600 x 76200` microns
+- Electron live print options: `silent: true`, `deviceName: PRINTER_NAME`, `landscape: false`, `margins: none`, `copies: 1`
 
 Cookie notes:
 

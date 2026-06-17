@@ -1,20 +1,21 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { print } from 'pdf-to-printer';
 
-vi.mock('pdf-to-printer', () => ({
-  print: vi.fn().mockResolvedValue(undefined),
-  getPrinters: vi.fn().mockResolvedValue([{ name: '4BARCODE 4B-2054TG' }]),
-  getDefaultPrinter: vi.fn().mockResolvedValue({ name: '4BARCODE 4B-2054TG' }),
-}));
+vi.mock('./printing/electronHtmlPrinter', async (importActual) => {
+  const actual = await importActual<typeof import('./printing/electronHtmlPrinter')>();
+  return {
+    ...actual,
+    printHtmlToWindowsPrinter: vi.fn().mockResolvedValue(undefined),
+    listElectronPrinters: vi.fn().mockResolvedValue([{ name: '4BARCODE 4B-2054TG', isDefault: true }]),
+  };
+});
 
 const outputDir = './tmp-test-output';
 
 beforeEach(async () => {
   await fs.rm(path.resolve(process.cwd(), outputDir), { recursive: true, force: true });
   vi.resetModules();
-  vi.mocked(print).mockClear();
 });
 
 afterEach(async () => {
@@ -22,7 +23,7 @@ afterEach(async () => {
 });
 
 describe('print bridge HTML renderer', () => {
-  test('writes a 4x3 exact-size PDF from the online order HTML template', async () => {
+  test('writes a 4x3 exact-size PDF preview from the online order HTML template', async () => {
     setBridgeEnv({ LABEL_SIZE: '4x3' });
 
     const { renderJobPdf } = await import('./printer');
@@ -42,7 +43,7 @@ describe('print bridge HTML renderer', () => {
     expect(html).toContain('<strong>Pincode:</strong> 131001');
   });
 
-  test('writes a 4x4 exact-size PDF without changing template body or print settings', async () => {
+  test('writes a 4x4 exact-size PDF preview without changing template body or print settings', async () => {
     setBridgeEnv({ LABEL_SIZE: '4x4' });
 
     const { renderJobPdf } = await import('./printer');
@@ -160,15 +161,32 @@ describe('print bridge HTML renderer', () => {
     expect(validateLabelPdfSize(pdf, '4x3', 0.6).ok).toBe(true);
   });
 
-  test('Windows print invocation passes only the selected printer', async () => {
+  test('Windows print invocation uses Electron HTML printing, not PDF shell printing', async () => {
     setBridgeEnv({ LABEL_SIZE: '4x3', PRINT_DRY_RUN: 'false' });
 
-    const { printPdf } = await import('./printer');
-    await printPdf('C:\\tmp\\kanika-label.pdf');
+    const electronPrinter = await import('./printing/electronHtmlPrinter');
+    const { printJobHtml } = await import('./printer');
+    await printJobHtml(manualReceiptJob('manual-electron-print'));
 
-    expect(print).toHaveBeenCalledWith('C:\\tmp\\kanika-label.pdf', {
-      printer: '4BARCODE 4B-2054TG',
+    expect(electronPrinter.printHtmlToWindowsPrinter).toHaveBeenCalledTimes(1);
+    expect(electronPrinter.printHtmlToWindowsPrinter).toHaveBeenCalledWith({
+      html: expect.stringContaining('<div class="paid">RECEIPT</div>'),
+      printerName: '4BARCODE 4B-2054TG',
+      labelSize: '4x3',
+      outputDir,
     });
+  });
+
+  test('print bridge source does not depend on PDF shell printing', async () => {
+    const packageJson = JSON.parse(await fs.readFile(path.resolve(process.cwd(), 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+    };
+    const printerSource = await fs.readFile(path.resolve(process.cwd(), 'src/printer.ts'), 'utf8');
+
+    expect(packageJson.dependencies).not.toHaveProperty('pdf-to-printer');
+    expect(printerSource).not.toContain('pdf-to-printer');
+    expect(printerSource).not.toContain('shell.open');
+    expect(printerSource).not.toContain('openPath');
   });
 
   test('rejects old pending test labels without the current template version', async () => {

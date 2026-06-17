@@ -21,6 +21,8 @@
     "preview:manual": "npm run preview:manual --workspace=@kda/print-bridge",
     "preview:online": "npm run preview:online --workspace=@kda/print-bridge",
     "preview:test": "npm run preview:test --workspace=@kda/print-bridge",
+    "print:manual": "npm run print:manual --workspace=@kda/print-bridge",
+    "print:online": "npm run print:online --workspace=@kda/print-bridge",
     "bridge:start": "npm run bridge:start --workspace=@kda/print-bridge",
     "printer:diagnose": "npm run printer:diagnose --workspace=@kda/print-bridge",
     "build:backend": "npm run build:packages && npm run build --workspace=@kda/backend",

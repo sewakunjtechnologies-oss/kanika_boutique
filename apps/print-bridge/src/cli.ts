@@ -1,6 +1,6 @@
 import { createBackendTestLabel, backendReachable } from './backendClient';
 import { bridgeEnv } from './config';
-import { buildDiagnostic, listPrinters, printPdf, renderJobPdf } from './printer';
+import { buildDiagnostic, listPrinters, printJobHtml, renderJobPdf } from './printer';
 import type { PrintJobDto } from './backendClient';
 
 export const VALID_TEMPLATES = ['manual-receipt', 'online-order-label', 'test-label'] as const;
@@ -86,14 +86,13 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     case 'print:test': {
       const resolution = resolvePreviewTemplate(parseTemplateArg(args));
       const job = sampleJob(resolution.resolvedTemplate);
-      const filePath = await renderJobPdf(job);
-      await printPdf(filePath);
-      logPreviewDiagnostics(resolution, filePath);
+      const rendered = await printJobHtml(job);
+      logPreviewDiagnostics(resolution, rendered.htmlPath);
       // eslint-disable-next-line no-console
       console.log(
         bridgeEnv.PRINT_DRY_RUN
-          ? `Dry-run ${resolution.resolvedTemplate} PDF written: ${filePath}`
-          : `Sent ${resolution.resolvedTemplate} PDF to ${bridgeEnv.PRINTER_NAME}`,
+          ? `Dry-run ${resolution.resolvedTemplate} HTML written: ${rendered.htmlPath}`
+          : `Sent ${resolution.resolvedTemplate} HTML to ${bridgeEnv.PRINTER_NAME} via Electron`,
       );
       return;
     }
