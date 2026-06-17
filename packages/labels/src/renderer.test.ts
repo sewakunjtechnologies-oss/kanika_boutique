@@ -5,6 +5,7 @@ import { computeLabelLayout, renderCode128BarcodePng, renderOrderLabel } from '.
 import { countPdfPages, validateLabelPdfSize } from './validate';
 
 const payload: LabelPayload = {
+  templateVersion: 'online-order-label-v1',
   storeName: 'Kanika Designs',
   orderId: 'KDA-2026-000123',
   customerName: 'Customer With A Very Very Long Name That Must Not Wrap',
@@ -24,13 +25,13 @@ const payload: LabelPayload = {
   city: 'Sonipat',
   state: 'Haryana',
   pincode: '110001',
-  labelProfile: 'compact_96x68',
+  labelProfile: '4x3_standard',
 };
 
 describe('label PDF renderer', () => {
-  test('compact_96x68 PDF is exactly 101.6 x 76.2 mm with no rotation', async () => {
-    const pdf = await renderOrderLabel(payload, 'compact_96x68');
-    const result = validateLabelPdfSize(pdf, 'compact_96x68', 0.6);
+  test('4x3_standard PDF is exactly 101.6 x 76.2 mm with no rotation', async () => {
+    const pdf = await renderOrderLabel(payload, '4x3_standard');
+    const result = validateLabelPdfSize(pdf, '4x3_standard', 0.6);
 
     expect(result.ok).toBe(true);
     expect(result.actual?.widthPt).toBeCloseTo(mmToPt(101.6), 0);
@@ -38,23 +39,14 @@ describe('label PDF renderer', () => {
     expect(result.actual!.widthPt).toBeGreaterThan(result.actual!.heightPt);
     expect(result.rotation).toBe(0);
     expect(countPdfPages(pdf)).toBe(1);
-    expect(LABEL_PROFILES['compact_96x68'].orientation).toBe('portrait');
-    expect(LABEL_PROFILES['compact_96x68'].rotation).toBe(0);
+    expect(LABEL_PROFILES['4x3_standard'].orientation).toBe('portrait');
+    expect(LABEL_PROFILES['4x3_standard'].rendererRotation).toBe(0);
+    expect(LABEL_PROFILES['4x3_standard'].rotation).toBe(0);
   });
 
-  test('4x4_portrait PDF is exactly 101.6 x 101.6 mm and portrait profile', async () => {
-    const pdf = await renderOrderLabel({ ...payload, labelProfile: '4x4_portrait' }, '4x4_portrait');
-    const result = validateLabelPdfSize(pdf, '4x4_portrait', 0.6);
-
-    expect(result.ok).toBe(true);
-    expect(result.actual?.widthPt).toBeCloseTo(mmToPt(101.6), 0);
-    expect(result.actual?.heightPt).toBeCloseTo(mmToPt(101.6), 0);
-    expect(LABEL_PROFILES['4x4_portrait'].orientation).toBe('portrait');
-  });
-
-  test('compact_96x68 content box is centered at 96 x 68 mm', () => {
-    const box = getContentBox('compact_96x68');
-    const layout = computeLabelLayout(payload, 'compact_96x68');
+  test('4x3_standard content box is centered at 96 x 68 mm', () => {
+    const box = getContentBox('4x3_standard');
+    const layout = computeLabelLayout(payload, '4x3_standard');
 
     expect(box.widthMm).toBe(96);
     expect(box.heightMm).toBe(68);
@@ -71,13 +63,29 @@ describe('label PDF renderer', () => {
   });
 
   test('long names do not change page count', async () => {
-    const pdf = await renderOrderLabel(payload, 'compact_96x68');
+    const pdf = await renderOrderLabel(payload, '4x3_standard');
 
     expect(countPdfPages(pdf)).toBe(1);
   });
 
+  test('long address truncates without overflow or extra pages', async () => {
+    const longAddressPayload = parseLabelPayload({
+      ...payload,
+      addressLine1: 'Very long house number and tower name that should truncate cleanly',
+      addressLine2: 'Near a very long landmark and market road that should not overlap product data',
+      city: 'Sonipat With Long Locality Name',
+      state: 'Haryana',
+    });
+    const layout = computeLabelLayout(longAddressPayload, '4x3_standard');
+    const pdf = await renderOrderLabel(longAddressPayload, '4x3_standard');
+
+    expect(layout.overflows).toBe(false);
+    expect(countPdfPages(pdf)).toBe(1);
+    expect(validateLabelPdfSize(pdf, '4x3_standard', 0.6).ok).toBe(true);
+  });
+
   test('barcode PNG generation succeeds', async () => {
-    const png = await renderCode128BarcodePng(payload.barcodeValue, LABEL_PROFILES['compact_96x68'].barcodeHeightMm);
+    const png = await renderCode128BarcodePng(payload.barcodeValue, LABEL_PROFILES['4x3_standard'].barcodeHeightMm);
 
     expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
   });
@@ -87,9 +95,9 @@ describe('label PDF renderer', () => {
     const pdf = await renderOrderLabel(legacyPayload, '4x3_landscape');
     const result = validateLabelPdfSize(pdf, '4x3_landscape', 0.6);
 
-    expect(legacyPayload.labelProfile).toBe('compact_96x68');
+    expect(legacyPayload.labelProfile).toBe('4x3_standard');
     expect(result.ok).toBe(true);
-    expect(result.profile).toBe('compact_96x68');
+    expect(result.profile).toBe('4x3_standard');
     expect(result.rotation).toBe(0);
   });
 });

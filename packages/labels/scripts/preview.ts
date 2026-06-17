@@ -1,22 +1,22 @@
-// Generate preview/fixture PDFs for the compact_96x68 profile.
+// Generate preview/fixture PDFs for the 4x3_standard profile.
 //
 //   npx ts-node --transpile-only packages/labels/scripts/preview.ts
 //
 // Writes into <repo>/print-output:
-//   * kanika-4x3-preview.pdf
-//   * kanika-manual-receipt-preview.pdf
+//   * automated-order-label-96x68-preview.pdf
+//   * manual-receipt-96x68-preview.pdf
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
   countPdfPages,
   parseLabelPayload,
   parseOfflineCustomerSlipPayload,
-  renderOfflineCustomerSlip,
-  renderOrderLabel,
+  renderManualReceipt,
+  renderOnlineOrderLabel,
   validateLabelPdfSize,
 } from '../src';
 
-const PROFILE = 'compact_96x68' as const;
+const PROFILE = '4x3_standard' as const;
 const OUT_DIR = path.resolve(__dirname, '../../../print-output');
 
 async function emit(name: string, pdf: Buffer): Promise<void> {
@@ -35,9 +35,10 @@ async function emit(name: string, pdf: Buffer): Promise<void> {
 async function main(): Promise<void> {
   await fs.mkdir(OUT_DIR, { recursive: true });
   await emit(
-    'kanika-4x3-preview.pdf',
-    await renderOrderLabel(
+    'automated-order-label-96x68-preview.pdf',
+    await renderOnlineOrderLabel(
       parseLabelPayload({
+        templateVersion: 'online-order-label-v1',
         storeName: 'Kanika Designs',
         orderId: 'KDA-2026-000123',
         customerName: 'Priya Sharma',
@@ -62,9 +63,10 @@ async function main(): Promise<void> {
     ),
   );
   await emit(
-    'kanika-manual-receipt-preview.pdf',
-    await renderOfflineCustomerSlip(
+    'manual-receipt-96x68-preview.pdf',
+    await renderManualReceipt(
       parseOfflineCustomerSlipPayload({
+        templateVersion: 'manual-receipt-v1',
         storeName: 'KANIKA DESIGNS',
         receiptId: 'MR-2026-0001',
         customerName: 'test-1',

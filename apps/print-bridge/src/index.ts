@@ -1,5 +1,5 @@
 import { bridgeEnv } from './config';
-import { getNextJob, heartbeat, markFailed, markPrinted, markPrinting } from './backendClient';
+import { getNextJob, heartbeat, markDryRunCompleted, markFailed, markPrinted, markPrinting } from './backendClient';
 import { printPdf, renderJobPdf } from './printer';
 
 let busy = false;
@@ -15,9 +15,17 @@ async function tick(): Promise<void> {
       const pdfPath = await renderJobPdf(job);
       await markPrinting(job.id);
       await printPdf(pdfPath);
-      await markPrinted(job.id);
+      if (bridgeEnv.PRINT_DRY_RUN) {
+        await markDryRunCompleted(job.id);
+      } else {
+        await markPrinted(job.id);
+      }
       // eslint-disable-next-line no-console
-      console.log(`Printed job ${job.id} (${bridgeEnv.PRINT_DRY_RUN ? 'dry-run PDF only' : bridgeEnv.PRINTER_NAME})`);
+      console.log(
+        bridgeEnv.PRINT_DRY_RUN
+          ? `Dry-run completed for job ${job.id}; no physical print was sent.`
+          : `Printed job ${job.id} (${bridgeEnv.PRINTER_NAME})`,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : 'unknown print error';
       await markFailed(job.id, message).catch(() => undefined);
@@ -44,7 +52,7 @@ async function sendHeartbeat(): Promise<void> {
 export async function startBridge(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(
-    `Kanika print bridge started. device=${bridgeEnv.DEVICE_ID} printer="${bridgeEnv.PRINTER_NAME}" profile=${bridgeEnv.LABEL_PROFILE} dryRun=${bridgeEnv.PRINT_DRY_RUN}`,
+    `Kanika print bridge started. device=${bridgeEnv.DEVICE_ID} printer="${bridgeEnv.PRINTER_NAME}" profile=${bridgeEnv.LABEL_PROFILE} batchSize=${bridgeEnv.PRINT_JOB_BATCH_SIZE} dryRun=${bridgeEnv.PRINT_DRY_RUN}`,
   );
   await sendHeartbeat();
   setInterval(() => void sendHeartbeat(), bridgeEnv.HEARTBEAT_INTERVAL_MS);

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { api } from '@/lib/api';
+import { api, apiErrorMessage } from '@/lib/api';
 
 interface PrinterStatus {
   bridgeOnline: boolean;
@@ -12,6 +12,7 @@ interface PrinterStatus {
     deviceId: string;
     printerName?: string;
     labelProfile?: string;
+    printJobBatchSize?: number;
     dryRun?: boolean;
     lastHeartbeatAt?: string;
   }>;
@@ -27,6 +28,7 @@ interface PrinterStatus {
 export default function PrinterPage(): React.ReactElement {
   const [status, setStatus] = useState<PrinterStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
 
   async function load(): Promise<void> {
     const result = await api.get<PrinterStatus>('/api/printer/status');
@@ -45,10 +47,23 @@ export default function PrinterPage(): React.ReactElement {
       await api.post('/api/printer/test-label-request');
       toast.success('Test label queued');
       await load();
-    } catch {
-      toast.error('Could not queue test label');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not queue test label'));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function cancelPendingTestLabels(): Promise<void> {
+    setCancelBusy(true);
+    try {
+      const result = await api.post<{ ok: boolean; cancelled: number }>('/api/printer/test-labels/cancel-pending');
+      toast.success(`Cancelled ${result.cancelled} pending test label${result.cancelled === 1 ? '' : 's'}`);
+      await load();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not cancel pending test labels'));
+    } finally {
+      setCancelBusy(false);
     }
   }
 
@@ -61,9 +76,14 @@ export default function PrinterPage(): React.ReactElement {
           <h1 className="text-2xl font-semibold">Printer</h1>
           <p className="text-sm text-muted-foreground">Shop laptop bridge and label queue</p>
         </div>
-        <Button onClick={printTestLabel} disabled={busy}>
-          {busy ? 'Queueing...' : 'Print Test Label'}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={cancelPendingTestLabels} disabled={cancelBusy}>
+            {cancelBusy ? 'Cancelling...' : 'Cancel Pending Tests'}
+          </Button>
+          <Button onClick={printTestLabel} disabled={busy}>
+            {busy ? 'Queueing...' : 'Print Test Label'}
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -81,6 +101,7 @@ export default function PrinterPage(): React.ReactElement {
           <Info label="Device" value={heartbeat?.deviceId ?? '-'} />
           <Info label="Printer" value={heartbeat?.printerName ?? '-'} />
           <Info label="Label profile" value={heartbeat?.labelProfile ?? '-'} />
+          <Info label="Batch size" value={heartbeat?.printJobBatchSize ? String(heartbeat.printJobBatchSize) : '-'} />
           <Info label="Dry run" value={heartbeat ? (heartbeat.dryRun ? 'Yes' : 'No') : '-'} />
           <Info label="Last heartbeat" value={formatDate(heartbeat?.lastHeartbeatAt)} />
           <Info label="Last printed by" value={status?.lastSuccessfulPrint?.claimedBy ?? '-'} />

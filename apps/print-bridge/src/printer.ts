@@ -7,8 +7,9 @@ import {
   LabelProfile,
   parseLabelPayload,
   parseOfflineCustomerSlipPayload,
-  renderOfflineCustomerSlip,
-  renderOrderLabel,
+  renderManualReceipt,
+  renderOnlineOrderLabel,
+  renderTestLabel,
   resolveLabelProfile,
   validateLabelPdfSize,
 } from '@kda/labels';
@@ -31,13 +32,26 @@ export async function renderJobPdf(job: PrintJobDto): Promise<string> {
 }
 
 async function renderPdfForJob(job: PrintJobDto, profile: LabelProfile): Promise<Buffer> {
-  if (job.type === 'ORDER_LABEL' || job.type === 'TEST_LABEL') {
+  if (job.type === 'ORDER_LABEL') {
     const payload = parseLabelPayload(job.payload);
-    return renderOrderLabel({ ...payload, labelProfile: profile.name }, profile);
+    if (payload.templateVersion !== 'online-order-label-v1') {
+      throw new Error(`template mismatch for ORDER_LABEL: ${payload.templateVersion}`);
+    }
+    return renderOnlineOrderLabel({ ...payload, labelProfile: profile.name }, profile);
+  }
+  if (job.type === 'TEST_LABEL') {
+    const payload = parseLabelPayload(job.payload);
+    if (payload.templateVersion !== 'test-label-v1') {
+      throw new Error(`template mismatch for TEST_LABEL: ${payload.templateVersion}`);
+    }
+    return renderTestLabel({ ...payload, labelProfile: profile.name }, profile);
   }
   if (job.type === 'OFFLINE_CUSTOMER_SLIP') {
     const payload = parseOfflineCustomerSlipPayload(job.payload);
-    return renderOfflineCustomerSlip({ ...payload, labelProfile: 'compact_96x68' }, profile);
+    if (payload.templateVersion !== 'manual-receipt-v1') {
+      throw new Error(`template mismatch for OFFLINE_CUSTOMER_SLIP: ${payload.templateVersion}`);
+    }
+    return renderManualReceipt({ ...payload, labelProfile: '4x3_standard' }, profile);
   }
   throw new Error(`unsupported print job type: ${job.type}`);
 }
@@ -54,6 +68,7 @@ export async function printPdf(filePath: string): Promise<void> {
     paperSize: profile.paperSizeName,
     monochrome: true,
     silent: true,
+    copies: 1,
   };
   // eslint-disable-next-line no-console
   console.log(
@@ -100,12 +115,17 @@ export async function buildDiagnostic(): Promise<Record<string, unknown>> {
     platform: os.platform(),
     release: os.release(),
     labelProfile: bridgeEnv.LABEL_PROFILE,
+    printJobBatchSize: bridgeEnv.PRINT_JOB_BATCH_SIZE,
     renderDiagnostics: renderDiagnostics(),
     pdf: {
       widthMm: selectedProfile.widthMm,
       heightMm: selectedProfile.heightMm,
       designWidthMm: selectedProfile.designWidthMm,
       designHeightMm: selectedProfile.designHeightMm,
+      contentWidthMm: selectedProfile.contentWidthMm,
+      contentHeightMm: selectedProfile.contentHeightMm,
+      offsetXmm: selectedProfile.offsetXmm,
+      offsetYmm: selectedProfile.offsetYmm,
       orientation: selectedProfile.orientation,
       rotation: selectedProfile.rotation,
       rendererRotation: selectedProfile.rendererRotation,
@@ -146,6 +166,7 @@ export function renderDiagnostics(job?: PrintJobDto): Record<string, string | nu
   const profile = selectedBridgeProfile();
   return {
     jobType: job?.type ?? 'unknown',
+    jobId: job?.id ?? '',
     receiptId: job?.type === 'OFFLINE_CUSTOMER_SLIP' ? String((job.payload as { receiptId?: unknown }).receiptId ?? '') : '',
     profile: profile.name,
     physicalPage: `${profile.widthMm}x${profile.heightMm}mm`,
@@ -166,6 +187,7 @@ function logRenderDiagnostics(job: PrintJobDto): void {
   console.log(
     [
       `jobType=${d.jobType}`,
+      d.jobId ? `jobId=${d.jobId}` : '',
       d.receiptId ? `receiptId=${d.receiptId}` : '',
       `profile=${d.profile}`,
       `physicalPage=${d.physicalPage}`,

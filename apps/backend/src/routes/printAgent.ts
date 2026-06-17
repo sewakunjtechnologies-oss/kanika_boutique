@@ -9,7 +9,9 @@ import { emitToDashboard } from '../realtime/io';
 import { redisConnection } from '../queues/connection';
 import {
   claimNextPrintJob,
+  cancelPendingTestLabelJobs,
   createTestLabelJob,
+  markPrintJobDryRunCompleted,
   markPrintJobFailed,
   markPrintJobPrinted,
   markPrintJobPrinting,
@@ -23,9 +25,10 @@ const DeviceSchema = z.object({
 
 const HeartbeatSchema = DeviceSchema.extend({
   printerName: z.string().optional(),
-  labelProfile: z.enum(['compact_96x68', '4x3', '4x4_portrait']).optional(),
+  labelProfile: z.enum(['4x3_standard']).optional(),
   printOrientation: z.enum(['portrait']).optional(),
   printRotation: z.number().int().optional(),
+  printJobBatchSize: z.literal(1).optional(),
   dryRun: z.boolean().optional(),
 });
 
@@ -104,6 +107,21 @@ printAgentRouter.post('/print-agent/jobs/:id/printed', requirePrintAgentToken, a
   res.json({ ok: true });
 });
 
+printAgentRouter.post('/print-agent/jobs/:id/dry-run-completed', requirePrintAgentToken, async (req: Request, res: Response): Promise<void> => {
+  const parsed = DeviceSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: 'invalid_input' });
+    return;
+  }
+  const job = await markPrintJobDryRunCompleted(req.params.id as string, parsed.data.deviceId);
+  if (!job) {
+    res.status(409).json({ error: 'invalid_job_state' });
+    return;
+  }
+  emitToDashboard('printer_status_changed', { dryRunCompletedJobId: job.id });
+  res.json({ ok: true });
+});
+
 printAgentRouter.post('/print-agent/jobs/:id/failed', requirePrintAgentToken, async (req: Request, res: Response): Promise<void> => {
   const parsed = FailedSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
@@ -129,6 +147,12 @@ printAgentRouter.post('/printer/test-label-request', requireAuth, requireManager
   const job = await createTestLabelJob(req.auth!.sub);
   emitToDashboard('printer_status_changed', { pendingJobId: job.id, testLabel: true });
   res.status(201).json({ job: { id: job.id, status: job.status, type: job.type } });
+});
+
+printAgentRouter.post('/printer/test-labels/cancel-pending', requireAuth, requireManagerOrOwner, async (req: Request, res: Response): Promise<void> => {
+  const cancelled = await cancelPendingTestLabelJobs(req.auth!.sub);
+  emitToDashboard('printer_status_changed', { cancelledPendingTestLabels: cancelled });
+  res.json({ ok: true, cancelled });
 });
 
 printAgentRouter.get('/printer/status', requireAuth, async (_req: Request, res: Response): Promise<void> => {

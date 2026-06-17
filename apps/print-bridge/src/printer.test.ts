@@ -7,7 +7,8 @@ describe('print bridge dry run', () => {
     process.env.PRINT_AGENT_TOKEN = 'test_print_agent_token_value_32_chars';
     process.env.DEVICE_ID = 'test-device';
     process.env.PRINTER_NAME = '4BARCODE 4B-2054TG';
-    process.env.LABEL_PROFILE = 'compact_96x68';
+    process.env.PRINT_JOB_BATCH_SIZE = '1';
+    process.env.LABEL_PROFILE = '4x3_standard';
     process.env.LABEL_WIDTH_MM = '101.6';
     process.env.LABEL_HEIGHT_MM = '76.2';
     process.env.PRINT_ORIENTATION = 'portrait';
@@ -27,6 +28,7 @@ describe('print bridge dry run', () => {
       createdAt: new Date(0).toISOString(),
       payload: {
         storeName: 'Kanika Designs',
+        templateVersion: 'test-label-v1',
         orderId: 'DRY-RUN',
         customerName: 'Test Customer',
         maskedPhone: '98XXXXXX21',
@@ -44,13 +46,13 @@ describe('print bridge dry run', () => {
         paymentStatus: 'PAID',
         amount: 2270,
         barcodeValue: 'DRY-RUN',
-        labelProfile: 'compact_96x68',
+        labelProfile: '4x3_standard',
       },
     });
 
     const pdf = await fs.readFile(filePath);
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
-    const validation = validateLabelPdfSize(pdf, 'compact_96x68', 0.6);
+    const validation = validateLabelPdfSize(pdf, '4x3_standard', 0.6);
     expect(validation.ok).toBe(true);
     expect(validation.actual!.widthPt).toBeGreaterThan(validation.actual!.heightPt);
     expect(validation.rotation).toBe(0);
@@ -61,7 +63,8 @@ describe('print bridge dry run', () => {
     process.env.PRINT_AGENT_TOKEN = 'test_print_agent_token_value_32_chars';
     process.env.DEVICE_ID = 'test-device';
     process.env.PRINTER_NAME = '4BARCODE 4B-2054TG';
-    process.env.LABEL_PROFILE = 'compact_96x68';
+    process.env.PRINT_JOB_BATCH_SIZE = '1';
+    process.env.LABEL_PROFILE = '4x3_standard';
     process.env.LABEL_WIDTH_MM = '101.6';
     process.env.LABEL_HEIGHT_MM = '76.2';
     process.env.PRINT_ORIENTATION = 'portrait';
@@ -80,6 +83,7 @@ describe('print bridge dry run', () => {
       attempts: 1,
       createdAt: new Date(0).toISOString(),
       payload: {
+        templateVersion: 'manual-receipt-v1',
         storeName: 'KANIKA DESIGNS',
         receiptId: 'MR-2026-0001',
         customerName: 'test-1',
@@ -101,13 +105,44 @@ describe('print bridge dry run', () => {
           },
         ],
         barcodeValue: 'MR-2026-0001',
-        labelProfile: 'compact_96x68',
+        labelProfile: '4x3_standard',
       },
     });
 
     const pdf = await fs.readFile(filePath);
-    const validation = validateLabelPdfSize(pdf, 'compact_96x68', 0.6);
+    const validation = validateLabelPdfSize(pdf, '4x3_standard', 0.6);
     expect(validation.ok).toBe(true);
     expect(validation.rotation).toBe(0);
+  });
+
+  test('rejects old pending test labels without the current template version', async () => {
+    process.env.BACKEND_URL = 'https://kanika-boutique.onrender.com';
+    process.env.PRINT_AGENT_TOKEN = 'test_print_agent_token_value_32_chars';
+    process.env.DEVICE_ID = 'test-device';
+    process.env.PRINTER_NAME = '4BARCODE 4B-2054TG';
+    process.env.PRINT_JOB_BATCH_SIZE = '1';
+    process.env.LABEL_PROFILE = '4x3_standard';
+    process.env.LABEL_WIDTH_MM = '101.6';
+    process.env.LABEL_HEIGHT_MM = '76.2';
+    process.env.PRINT_ORIENTATION = 'portrait';
+    process.env.PRINT_ROTATION = '0';
+    process.env.PRINT_SCALE_MODE = 'noscale';
+    process.env.PRINT_DRY_RUN = 'true';
+    process.env.OUTPUT_DIR = './tmp-test-output';
+    vi.resetModules();
+
+    const { renderJobPdf } = await import('./printer');
+    await expect(renderJobPdf({
+      id: 'old-test-label',
+      type: 'TEST_LABEL',
+      status: 'CLAIMED',
+      attempts: 1,
+      createdAt: new Date(0).toISOString(),
+      payload: {
+        storeName: 'Kanika Designs',
+        orderId: 'OLD-TEST',
+        barcodeValue: 'OLD-TEST',
+      },
+    })).rejects.toThrow();
   });
 });

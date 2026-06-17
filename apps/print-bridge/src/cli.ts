@@ -1,6 +1,7 @@
 import { createBackendTestLabel, backendReachable } from './backendClient';
 import { bridgeEnv } from './config';
 import { buildDiagnostic, listPrinters, printPdf, renderJobPdf } from './printer';
+import type { PrintJobDto } from './backendClient';
 
 const command = process.argv[2];
 
@@ -44,7 +45,7 @@ async function main(): Promise<void> {
   }
 }
 
-function sampleJob() {
+function sampleJob(): PrintJobDto {
   return {
     id: 'preview-test-label',
     type: 'TEST_LABEL' as const,
@@ -53,6 +54,7 @@ function sampleJob() {
     createdAt: new Date(0).toISOString(),
     payload: {
       storeName: 'Kanika Designs',
+      templateVersion: 'test-label-v1',
       orderId: 'KD-TEST-1001',
       customerName: 'Priya Sharma',
       maskedPhone: '98XXXXXX21',

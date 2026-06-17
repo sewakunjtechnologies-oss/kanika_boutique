@@ -4,7 +4,7 @@ import { bridgeEnv } from './config';
 export interface PrintJobDto {
   id: string;
   type: 'ORDER_LABEL' | 'TEST_LABEL' | 'OFFLINE_CUSTOMER_SLIP' | 'PRODUCT_BARCODE';
-  status: string;
+  status: 'PENDING' | 'CLAIMED' | 'PRINTING' | 'PRINTED' | 'DRY_RUN_COMPLETED' | 'FAILED' | 'CANCELLED';
   payload: unknown;
   attempts: number;
   createdAt: string;
@@ -26,6 +26,7 @@ export async function heartbeat(): Promise<void> {
     labelProfile: bridgeEnv.LABEL_PROFILE,
     printOrientation: bridgeEnv.PRINT_ORIENTATION,
     printRotation: bridgeEnv.PRINT_ROTATION,
+    printJobBatchSize: bridgeEnv.PRINT_JOB_BATCH_SIZE,
     dryRun: bridgeEnv.PRINT_DRY_RUN,
   });
 }
@@ -41,6 +42,10 @@ export async function markPrinting(jobId: string): Promise<void> {
 
 export async function markPrinted(jobId: string): Promise<void> {
   await api.post(`/api/print-agent/jobs/${jobId}/printed`, { deviceId: bridgeEnv.DEVICE_ID });
+}
+
+export async function markDryRunCompleted(jobId: string): Promise<void> {
+  await api.post(`/api/print-agent/jobs/${jobId}/dry-run-completed`, { deviceId: bridgeEnv.DEVICE_ID });
 }
 
 export async function markFailed(jobId: string, error: string): Promise<void> {

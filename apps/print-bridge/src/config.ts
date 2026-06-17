@@ -13,10 +13,11 @@ const envBool = z.preprocess((value) => {
 
 const labelProfile = z.preprocess((value) => {
   const raw = typeof value === 'string' ? value.trim() : '';
-  if (raw === '4x4') return '4x4_portrait';
-  if (raw === '4x3_landscape' || raw === '4x3' || !raw) return 'compact_96x68';
+  if (!raw || ['compact_96x68', '4x3', '4x3_landscape', '4x4', '4x4_portrait'].includes(raw)) {
+    return '4x3_standard';
+  }
   return raw;
-}, z.enum(['compact_96x68', '4x3', '4x4_portrait']));
+}, z.enum(['4x3_standard']));
 
 const rootEnvPath = path.resolve(__dirname, '../../../.env');
 if (fs.existsSync(rootEnvPath)) {
@@ -31,7 +32,8 @@ const schema = z.object({
   PRINTER_NAME: z.string().min(1),
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(3000),
   HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
-  LABEL_PROFILE: labelProfile.default('compact_96x68'),
+  PRINT_JOB_BATCH_SIZE: z.coerce.number().int().refine((value) => value === 1, 'PRINT_JOB_BATCH_SIZE must be 1').default(1),
+  LABEL_PROFILE: labelProfile.default('4x3_standard'),
   LABEL_WIDTH_MM: z.coerce.number().positive().optional(),
   LABEL_HEIGHT_MM: z.coerce.number().positive().optional(),
   PRINT_ORIENTATION: z.enum(['portrait']).default('portrait'),

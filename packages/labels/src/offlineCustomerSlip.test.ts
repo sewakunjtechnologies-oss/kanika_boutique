@@ -8,6 +8,7 @@ import {
 import { countPdfPages, validateLabelPdfSize } from './validate';
 
 const payload = parseOfflineCustomerSlipPayload({
+  templateVersion: 'manual-receipt-v1',
   storeName: 'KANIKA DESIGNS',
   receiptId: 'MR-2026-0001',
   customerName: 'test-1',
@@ -29,13 +30,13 @@ const payload = parseOfflineCustomerSlipPayload({
     },
   ],
   barcodeValue: 'MR-2026-0001',
-  labelProfile: 'compact_96x68',
+  labelProfile: '4x3_standard',
 });
 
 describe('offline customer slip renderer', () => {
   test('manual slip PDF is exactly 101.6 x 76.2 mm with one page and no rotation', async () => {
     const pdf = await renderOfflineCustomerSlip(payload);
-    const validation = validateLabelPdfSize(pdf, 'compact_96x68', 0.6);
+    const validation = validateLabelPdfSize(pdf, '4x3_standard', 0.6);
 
     expect(validation.ok).toBe(true);
     expect(validation.actual?.widthPt).toBeCloseTo(mmToPt(101.6), 0);
@@ -45,8 +46,8 @@ describe('offline customer slip renderer', () => {
   });
 
   test('content box is exactly 96 x 68 mm and centered', () => {
-    const box = getContentBox('compact_96x68');
-    const layout = computeOfflineSlipLayout('compact_96x68');
+    const box = getContentBox('4x3_standard');
+    const layout = computeOfflineSlipLayout('4x3_standard');
 
     expect(box.widthMm).toBe(96);
     expect(box.heightMm).toBe(68);
@@ -75,6 +76,19 @@ describe('offline customer slip renderer', () => {
     });
 
     expect(countPdfPages(pdf)).toBe(1);
-    expect(validateLabelPdfSize(pdf, 'compact_96x68', 0.6).ok).toBe(true);
+    expect(validateLabelPdfSize(pdf, '4x3_standard', 0.6).ok).toBe(true);
+  });
+
+  test('manual receipt payload does not carry address fields', () => {
+    const parsed = parseOfflineCustomerSlipPayload({
+      ...payload,
+      addressLine1: 'Should be ignored',
+      city: 'Should be ignored',
+      pincode: '000000',
+    });
+
+    expect('addressLine1' in parsed).toBe(false);
+    expect('city' in parsed).toBe(false);
+    expect('pincode' in parsed).toBe(false);
   });
 });

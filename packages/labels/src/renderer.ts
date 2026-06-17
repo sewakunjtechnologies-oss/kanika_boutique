@@ -14,7 +14,7 @@ import {
 } from './profiles';
 
 export interface LabelRenderer {
-  renderOrderLabel(payload: LabelPayload, profile: LabelProfileInput): Promise<Buffer>;
+  renderOnlineOrderLabel(payload: LabelPayload, profile: LabelProfileInput): Promise<Buffer>;
 }
 
 const FONT_REGULAR = 'Helvetica';
@@ -69,9 +69,7 @@ export function computeLabelLayout(payload: LabelPayload, profileInput: LabelPro
   const barcodeTopPt = barcodeAreaTopPt + mmToPt(1);
   const barcodeBottomPt = barcodeTopPt + barcodeHeightPt;
   const bodyTopPt = safeYPt;
-  const bodyBottomPt = isPortraitLayout(profile)
-    ? estimatePortraitBodyBottomPt(payload, bodyTopPt)
-    : estimateWide4x3BodyBottomPt(bodyTopPt);
+  const bodyBottomPt = estimateWide4x3BodyBottomPt(bodyTopPt);
   return {
     profile,
     physicalWidthPt,
@@ -114,7 +112,7 @@ export async function renderCode128BarcodePng(value: string, heightMm: number): 
 }
 
 export class PdfLabelRenderer implements LabelRenderer {
-  async renderOrderLabel(payload: LabelPayload, profileInput: LabelProfileInput): Promise<Buffer> {
+  async renderOnlineOrderLabel(payload: LabelPayload, profileInput: LabelProfileInput): Promise<Buffer> {
     const profile = resolveLabelProfile(profileInput);
     const layout = computeLabelLayout(payload, profile);
     if (layout.overflows) {
@@ -152,11 +150,7 @@ export class PdfLabelRenderer implements LabelRenderer {
     doc.rect(0, 0, layout.pageWidthPt, layout.pageHeightPt).fill('#FFFFFF');
     doc.fillColor(BLACK).strokeColor(BLACK);
 
-    if (isPortraitLayout(layout.profile)) {
-      drawPortraitLabel(doc, payload, layout, barcode);
-    } else {
-      drawWide4x3Label(doc, payload, layout, barcode);
-    }
+    drawWide4x3Label(doc, payload, layout, barcode);
     doc.restore();
     doc.end();
     return done;
@@ -169,8 +163,22 @@ export function renderOrderLabel(
   payload: LabelPayload,
   profile: LabelProfileInput = payload.labelProfile ?? DEFAULT_LABEL_PROFILE,
 ): Promise<Buffer> {
-  if (typeof profile === 'object') return defaultLabelRenderer.renderOrderLabel(payload, profile);
-  return defaultLabelRenderer.renderOrderLabel(payload, normalizeLabelProfileName(profile));
+  return renderOnlineOrderLabel(payload, profile);
+}
+
+export function renderOnlineOrderLabel(
+  payload: LabelPayload,
+  profile: LabelProfileInput = payload.labelProfile ?? DEFAULT_LABEL_PROFILE,
+): Promise<Buffer> {
+  if (typeof profile === 'object') return defaultLabelRenderer.renderOnlineOrderLabel(payload, profile);
+  return defaultLabelRenderer.renderOnlineOrderLabel(payload, normalizeLabelProfileName(profile));
+}
+
+export function renderTestLabel(
+  payload: LabelPayload,
+  profile: LabelProfileInput = payload.labelProfile ?? DEFAULT_LABEL_PROFILE,
+): Promise<Buffer> {
+  return renderOnlineOrderLabel(payload, profile);
 }
 
 function drawWide4x3Label(
@@ -199,13 +207,9 @@ function drawWide4x3Label(
 
   leftY = text(doc, safeValue(payload.customerName), leftX, leftY, leftW, { size: 10, bold: true, height: 11 });
   leftY = text(doc, `Phone: ${phone(payload)}`, leftX, leftY, leftW, { size: 9.2, height: 10 });
-  leftY = text(doc, addressLine(payload.addressLine1 || payload.addressLine), leftX, leftY, leftW, { size: 8.8, height: 10 });
-  if (payload.addressLine2) {
-    leftY = text(doc, addressLine(payload.addressLine2), leftX, leftY, leftW, { size: 8.8, height: 10 });
+  for (const line of compactAddressLines(payload)) {
+    leftY = text(doc, line, leftX, leftY, leftW, { size: 8.5, height: 9.4 });
   }
-  const locality = [payload.city, payload.state].filter(Boolean).join(', ');
-  if (locality) leftY = text(doc, locality, leftX, leftY, leftW, { size: 8.8, height: 10 });
-  text(doc, `PIN: ${payload.pincode || '-'}`, leftX, leftY, leftW, { size: 9, bold: true, height: 10 });
 
   rightY = text(doc, safeValue(payload.productName), rightX, rightY, rightW, { size: 9.3, bold: true, height: 11 });
   rightY = text(doc, `SKU: ${payload.sku || '-'}`, rightX, rightY, rightW, { size: 8.8, height: 10 });
@@ -219,42 +223,6 @@ function drawWide4x3Label(
   text(doc, `Payment: ${(payload.paymentStatus || 'PAID').toUpperCase()}`, rightX, rightY, rightW, {
     size: 8.5,
     height: 10,
-    align: 'right',
-  });
-
-  drawBarcode(doc, payload, layout, barcode);
-}
-
-function drawPortraitLabel(
-  doc: PDFKit.PDFDocument,
-  payload: LabelPayload,
-  layout: LabelLayout,
-  barcode: Buffer,
-): void {
-  const x = layout.safeXPt;
-  const w = layout.safeWidthPt;
-  let y = layout.safeYPt;
-  doc.fillColor(BLACK).strokeColor(BLACK);
-
-  drawTopRow(doc, payload, layout, y, 17, 16);
-  y += 21;
-  y = text(doc, `Order: ${payload.orderId}`, x, y, w, { size: 12.5, bold: true, height: 15 });
-  y += 2;
-  y = text(doc, safeValue(payload.customerName), x, y, w, { size: 10.5, bold: true, height: 13 });
-  y = text(doc, `Phone: ${phone(payload)}`, x, y, w, { size: 9.5, height: 12 });
-  y = text(doc, addressLine(payload.addressLine1 || payload.addressLine), x, y, w, { size: 9.4, height: 12 });
-  if (payload.addressLine2) y = text(doc, addressLine(payload.addressLine2), x, y, w, { size: 9.4, height: 12 });
-  const locality = [payload.city, payload.state].filter(Boolean).join(', ');
-  if (locality) y = text(doc, locality, x, y, w, { size: 9.4, height: 12 });
-  y = text(doc, `PIN: ${payload.pincode || '-'}`, x, y, w, { size: 9.6, bold: true, height: 12 });
-  y += 3;
-  y = text(doc, safeValue(payload.productName), x, y, w, { size: 10, bold: true, height: 13 });
-  y = text(doc, `SKU: ${payload.sku || '-'}`, x, y, w, { size: 9.4, height: 12 });
-  y = twoColumnText(doc, x, y, w, `Size: ${payload.size || '-'}`, `Qty: ${payload.quantity}`, 9.4);
-  text(doc, `Amount: Rs ${formatAmount(payload.amount)}`, x, y + 2, w, {
-    size: 14,
-    bold: true,
-    height: 16,
     align: 'right',
   });
 
@@ -349,28 +317,23 @@ function twoColumnText(
   return y + size + 3;
 }
 
-/** Every profile except the wide 4x3 lays content out as a portrait column. */
-function isPortraitLayout(profile: LabelProfile): boolean {
-  return profile.name === '4x4_portrait';
-}
-
 function estimateWide4x3BodyBottomPt(topPt: number): number {
   return topPt + 18 + 14 + 55;
-}
-
-function estimatePortraitBodyBottomPt(payload: LabelPayload, topPt: number): number {
-  let bottom = topPt + 21 + 15 + 13 + 12 + 12 + 12 + 12 + 13 + 12 + 12 + 16;
-  if (payload.addressLine2) bottom += 12;
-  if (payload.city || payload.state) bottom += 12;
-  return bottom;
 }
 
 function phone(payload: LabelPayload): string {
   return payload.phoneMasked || payload.maskedPhone || '-';
 }
 
-function addressLine(value: string): string {
-  return value || '-';
+function compactAddressLines(payload: LabelPayload): string[] {
+  const primary = payload.addressLine1 || payload.addressLine;
+  const locality = [payload.city, payload.state].filter(Boolean).join(', ');
+  const pin = payload.pincode ? `PIN: ${payload.pincode}` : '';
+  return [
+    primary,
+    payload.addressLine2,
+    [locality, pin].filter(Boolean).join(' '),
+  ].map((line) => line.trim()).filter(Boolean).slice(0, 3);
 }
 
 function safeValue(value: string): string {

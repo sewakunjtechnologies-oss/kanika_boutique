@@ -234,7 +234,8 @@ DEVICE_ID=kanika-shop-laptop-01
 PRINTER_NAME=4BARCODE 4B-2054TG
 POLL_INTERVAL_MS=3000
 HEARTBEAT_INTERVAL_MS=30000
-LABEL_PROFILE=compact_96x68
+PRINT_JOB_BATCH_SIZE=1
+LABEL_PROFILE=4x3_standard
 LABEL_WIDTH_MM=101.6
 LABEL_HEIGHT_MM=76.2
 PRINT_ORIENTATION=portrait
@@ -257,13 +258,15 @@ npm run bridge:start
 
 For the first physical test, keep `PRINT_DRY_RUN=true` and confirm the PDF in `apps/print-bridge/print-output`. Then set `PRINT_DRY_RUN=false`, ensure the Windows printer default paper/form is `Kanika-4x3`, set printer orientation to portrait/normal with no scaling, and run `npm run print:test`. The PDF page remains 101.6 x 76.2 mm; the label design is a centered 96 x 68 mm box.
 
-Switch to 4x4 later:
+Current 4x3 standard:
 
-1. Create/select the Windows custom paper form `Kanika-4x4` as `101.6 mm x 101.6 mm`.
-2. Set `LABEL_PROFILE=4x4_portrait`, `LABEL_WIDTH_MM=101.6`, `LABEL_HEIGHT_MM=101.6`, `PRINT_ORIENTATION=portrait`, and `PRINT_ROTATION=0` on the bridge.
-3. Run `npm run bridge:dry-run`.
-4. Physically test with `npm run print:test`.
-5. Restart `npm run bridge:start`.
+- PDF physical page: `101.6 mm x 76.2 mm`
+- Designed content box: `96 mm x 68 mm`
+- Offset: `2.8 mm` horizontal, `4.1 mm` vertical
+- Renderer rotation: `0`
+- PDF rotation metadata: `0`
+- Windows orientation: `Portrait / Normal`
+- Scale mode: `noscale`
 
 Cookie notes:
 

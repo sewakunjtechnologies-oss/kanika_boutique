@@ -18,6 +18,7 @@ const SlipItemSchema = z.object({
 });
 
 export const OfflineCustomerSlipPayloadSchema = z.object({
+  templateVersion: z.literal('manual-receipt-v1'),
   storeName: z.string().min(1),
   receiptId: z.string().min(1),
   customerName: z.string().default('Walk-in customer'),
@@ -30,7 +31,7 @@ export const OfflineCustomerSlipPayloadSchema = z.object({
   total: z.number().nonnegative(),
   items: z.array(SlipItemSchema).min(1),
   barcodeValue: z.string().min(1),
-  labelProfile: z.literal('compact_96x68').default('compact_96x68'),
+  labelProfile: z.literal('4x3_standard').default('4x3_standard'),
 });
 
 export type OfflineCustomerSlipPayload = z.infer<typeof OfflineCustomerSlipPayloadSchema>;
@@ -48,7 +49,7 @@ export interface OfflineSlipLayout {
   contentOffsetYPt: number;
 }
 
-export function computeOfflineSlipLayout(profileInput: LabelProfileInput = 'compact_96x68'): OfflineSlipLayout {
+export function computeOfflineSlipLayout(profileInput: LabelProfileInput = '4x3_standard'): OfflineSlipLayout {
   const profile = resolveLabelProfile(profileInput);
   const box = getContentBox(profile);
   return {
@@ -63,7 +64,7 @@ export function computeOfflineSlipLayout(profileInput: LabelProfileInput = 'comp
 
 export async function renderOfflineCustomerSlip(
   rawPayload: OfflineCustomerSlipPayload,
-  profileInput: LabelProfileInput = 'compact_96x68',
+  profileInput: LabelProfileInput = '4x3_standard',
 ): Promise<Buffer> {
   const payload = parseOfflineCustomerSlipPayload(rawPayload);
   const profile = resolveLabelProfile(profileInput);
@@ -135,6 +136,13 @@ export async function renderOfflineCustomerSlip(
   doc.restore();
   doc.end();
   return done;
+}
+
+export function renderManualReceipt(
+  payload: OfflineCustomerSlipPayload,
+  profileInput: LabelProfileInput = '4x3_standard',
+): Promise<Buffer> {
+  return renderOfflineCustomerSlip(payload, profileInput);
 }
 
 function compactItems(items: OfflineCustomerSlipPayload['items']): OfflineCustomerSlipPayload['items'] {

@@ -7,6 +7,7 @@ import type { AnyLabelProfileName, LabelProfileName } from './profiles';
 // no payment screenshots, UPI ids, tokens or full phone numbers.
 
 const RawLabelPayloadSchema = z.object({
+  templateVersion: z.enum(['online-order-label-v1', 'test-label-v1']),
   storeName: z.string().min(1),
   orderId: z.string().min(1),
   customerName: z.string().default(''),
@@ -30,9 +31,9 @@ const RawLabelPayloadSchema = z.object({
   pincode: z.string().default(''),
   labelProfile: z
     .custom<AnyLabelProfileName>((value) =>
-      ['compact_96x68', '4x3', '4x3_landscape', '4x4_portrait', '4x4'].includes(String(value)),
+      ['4x3_standard', 'compact_96x68', '4x3', '4x3_landscape', '4x4_portrait', '4x4'].includes(String(value)),
     )
-    .default('compact_96x68')
+    .default('4x3_standard')
     .transform((value) => normalizeLabelProfileName(value)),
 });
 

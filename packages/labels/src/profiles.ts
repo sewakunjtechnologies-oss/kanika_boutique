@@ -5,11 +5,11 @@
 //     receives. Its /Rotate metadata is always 0 and Windows always prints it
 //     "Portrait / Normal" at 100% with no fit and no driver auto-rotation.
 //   * The LOGICAL design canvas (designWidthMm x designHeightMm) is where the
-//     renderer lays out the label. `compact_96x68` uses a 96 x 68 mm logical
+//     renderer lays out the label. `4x3_standard` uses a 96 x 68 mm logical
 //     canvas centered inside the physical 101.6 x 76.2 mm 4x3 stock.
 
-export type LabelProfileName = 'compact_96x68' | '4x3' | '4x4_portrait';
-export type LegacyLabelProfileName = '4x3_landscape' | '4x4';
+export type LabelProfileName = '4x3_standard';
+export type LegacyLabelProfileName = 'compact_96x68' | '4x3' | '4x3_landscape' | '4x4' | '4x4_portrait';
 export type AnyLabelProfileName = LabelProfileName | LegacyLabelProfileName;
 
 export interface LabelProfile {
@@ -41,11 +41,21 @@ export interface LabelProfile {
   barcodeAreaHeightMm: number;
   /** Windows custom paper/form name to select when supported by the print library. */
   paperSizeName: string;
+  physicalWidthMm: number;
+  physicalHeightMm: number;
+  contentWidthMm: number;
+  contentHeightMm: number;
+  offsetXmm: number;
+  offsetYmm: number;
+  pdfRotation: 0;
+  windowsOrientation: 'portrait';
+  windowsRotation: 0;
+  scaleMode: 'noscale';
 }
 
 export const LABEL_PROFILES: Record<LabelProfileName, LabelProfile> = {
-  'compact_96x68': {
-    name: 'compact_96x68',
+  '4x3_standard': {
+    name: '4x3_standard',
     orientation: 'portrait',
     rotation: 0,
     rendererRotation: 0,
@@ -62,53 +72,24 @@ export const LABEL_PROFILES: Record<LabelProfileName, LabelProfile> = {
     barcodeHeightMm: 9,
     barcodeAreaHeightMm: 13,
     paperSizeName: 'Kanika-4x3',
-  },
-  '4x3': {
-    name: '4x3',
-    orientation: 'portrait',
-    rotation: 0,
-    rendererRotation: 0,
-    widthMm: 101.6,
-    heightMm: 76.2,
-    designWidthMm: 101.6,
-    designHeightMm: 76.2,
-    safeWidthMm: 95,
-    safeHeightMm: 68,
-    marginTopMm: 2.5,
-    marginRightMm: 3,
-    marginBottomMm: 4.5,
-    marginLeftMm: 3,
-    barcodeHeightMm: 9,
-    barcodeAreaHeightMm: 13,
-    paperSizeName: 'Kanika-4x3',
-  },
-  '4x4_portrait': {
-    name: '4x4_portrait',
-    orientation: 'portrait',
-    rotation: 0,
-    rendererRotation: 0,
-    widthMm: 101.6,
-    heightMm: 101.6,
-    designWidthMm: 101.6,
-    designHeightMm: 101.6,
-    safeWidthMm: 95,
-    safeHeightMm: 94,
-    marginTopMm: 3,
-    marginRightMm: 3,
-    marginBottomMm: 5,
-    marginLeftMm: 3,
-    barcodeHeightMm: 11,
-    barcodeAreaHeightMm: 16,
-    paperSizeName: 'Kanika-4x4',
+    physicalWidthMm: 101.6,
+    physicalHeightMm: 76.2,
+    contentWidthMm: 96,
+    contentHeightMm: 68,
+    offsetXmm: 2.8,
+    offsetYmm: 4.1,
+    pdfRotation: 0,
+    windowsOrientation: 'portrait',
+    windowsRotation: 0,
+    scaleMode: 'noscale',
   },
 };
 
-export const DEFAULT_LABEL_PROFILE: LabelProfileName = 'compact_96x68';
+export const DEFAULT_LABEL_PROFILE: LabelProfileName = '4x3_standard';
 
 export function normalizeLabelProfileName(name: string | undefined | null): LabelProfileName {
-  if (name === '4x4' || name === '4x4_portrait') return '4x4_portrait';
-  if (name === '4x3' || name === '4x3_landscape' || name === 'compact_96x68' || !name) return 'compact_96x68';
-  return 'compact_96x68';
+  void name;
+  return '4x3_standard';
 }
 
 export type LabelProfileInput = AnyLabelProfileName | LabelProfile;
@@ -116,8 +97,6 @@ export type LabelProfileInput = AnyLabelProfileName | LabelProfile;
 export interface LabelProfileOverrides {
   widthMm?: number;
   heightMm?: number;
-  designWidthMm?: number;
-  designHeightMm?: number;
   orientation?: 'portrait';
   rotation?: 0;
 }
@@ -130,14 +109,32 @@ export function resolveLabelProfile(
     typeof nameOrProfile === 'object' && nameOrProfile
       ? nameOrProfile
       : LABEL_PROFILES[normalizeLabelProfileName(nameOrProfile)];
+  const widthMm = overrides.widthMm ?? base.widthMm;
+  const heightMm = overrides.heightMm ?? base.heightMm;
+  const designWidthMm = base.designWidthMm;
+  const designHeightMm = base.designHeightMm;
   return {
     ...base,
     ...overrides,
     name: base.name,
+    widthMm,
+    heightMm,
+    physicalWidthMm: widthMm,
+    physicalHeightMm: heightMm,
+    designWidthMm,
+    designHeightMm,
+    contentWidthMm: designWidthMm,
+    contentHeightMm: designHeightMm,
+    offsetXmm: roundMm((widthMm - designWidthMm) / 2),
+    offsetYmm: roundMm((heightMm - designHeightMm) / 2),
     // No rotation is carried by the PDF or renderer for the current 4BARCODE
     // media profile.
     rotation: 0,
     rendererRotation: 0,
+    pdfRotation: 0,
+    windowsOrientation: 'portrait',
+    windowsRotation: 0,
+    scaleMode: 'noscale',
   };
 }
 
@@ -151,16 +148,20 @@ export interface ContentBox {
 export function getContentBox(profileInput: LabelProfileInput | undefined | null): ContentBox {
   const profile = resolveLabelProfile(profileInput);
   return {
-    offsetXmm: (profile.widthMm - profile.designWidthMm) / 2,
-    offsetYmm: (profile.heightMm - profile.designHeightMm) / 2,
-    widthMm: profile.designWidthMm,
-    heightMm: profile.designHeightMm,
+    offsetXmm: profile.offsetXmm,
+    offsetYmm: profile.offsetYmm,
+    widthMm: profile.contentWidthMm,
+    heightMm: profile.contentHeightMm,
   };
 }
 
 /** PDF user-space units are points (1/72 inch). Convert millimetres → points. */
 export function mmToPt(mm: number): number {
   return (mm * 72) / 25.4;
+}
+
+function roundMm(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }
 
 /** Printer dot resolution. DCode DC421 Pro is a 203 DPI printer. */

@@ -127,6 +127,7 @@ export async function createManualOrderLabelJob(orderId: string, requestedBy: st
 
 export async function createTestLabelJob(requestedBy = 'print-agent'): Promise<PrintJob> {
   const payload: LabelPayload = {
+    templateVersion: 'test-label-v1',
     storeName: env.BUSINESS_NAME,
     orderId: 'KD-TEST-1001',
     customerName: 'Priya Sharma',
@@ -146,7 +147,7 @@ export async function createTestLabelJob(requestedBy = 'print-agent'): Promise<P
     amount: 2270,
     barcodeValue: 'KD-TEST-1001',
     addressLine: 'H.No. 25, Sector 14',
-    labelProfile: 'compact_96x68',
+    labelProfile: '4x3_standard',
   };
 
   return prisma.printJob.create({
@@ -301,6 +302,22 @@ export async function markPrintJobPrinted(id: string, deviceId: string): Promise
   return job;
 }
 
+export async function markPrintJobDryRunCompleted(id: string, deviceId: string): Promise<PrintJob | null> {
+  const result = await prisma.printJob.updateMany({
+    where: {
+      id,
+      claimedBy: deviceId,
+      status: { in: [PrintJobStatus.CLAIMED, PrintJobStatus.PRINTING] },
+    },
+    data: {
+      status: PrintJobStatus.DRY_RUN_COMPLETED,
+      lastError: null,
+    },
+  });
+  if (result.count !== 1) return null;
+  return prisma.printJob.findUnique({ where: { id } });
+}
+
 export async function markPrintJobFailed(id: string, deviceId: string, error: string): Promise<PrintJob | null> {
   const result = await prisma.printJob.updateMany({
     where: {
@@ -315,6 +332,20 @@ export async function markPrintJobFailed(id: string, deviceId: string, error: st
   });
   if (result.count !== 1) return null;
   return prisma.printJob.findUnique({ where: { id } });
+}
+
+export async function cancelPendingTestLabelJobs(adminUserId: string): Promise<number> {
+  const result = await prisma.printJob.updateMany({
+    where: {
+      type: PrintJobType.TEST_LABEL,
+      status: PrintJobStatus.PENDING,
+    },
+    data: {
+      status: PrintJobStatus.CANCELLED,
+      lastError: `Cancelled pending test labels by ${adminUserId}`,
+    },
+  });
+  return result.count;
 }
 
 export function parsePrintJobPayload(job: Pick<PrintJob, 'payload'>): LabelPayload {
@@ -334,6 +365,7 @@ export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
   const phoneMasked = maskPhone(order.customer.whatsappNumber);
 
   return {
+    templateVersion: 'online-order-label-v1',
     storeName: env.BUSINESS_NAME,
     orderId: order.orderNumber,
     customerName: order.shippingName,
@@ -353,12 +385,13 @@ export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
     addressLine2: address.addressLine2,
     city: order.shippingCity,
     state: order.shippingState,
-    labelProfile: 'compact_96x68',
+    labelProfile: '4x3_standard',
   };
 }
 
 export function buildManualReceiptSlipPayload(receipt: ManualReceiptForSlip): OfflineCustomerSlipPayload {
   const payload: OfflineCustomerSlipPayload = {
+    templateVersion: 'manual-receipt-v1',
     storeName: env.BUSINESS_NAME,
     receiptId: receipt.receiptNumber,
     customerName: receipt.customerName?.trim() || 'Walk-in customer',
@@ -378,7 +411,7 @@ export function buildManualReceiptSlipPayload(receipt: ManualReceiptForSlip): Of
       amount: moneyNumber(item.unitPrice) * item.quantity,
     })),
     barcodeValue: receipt.receiptNumber,
-    labelProfile: 'compact_96x68',
+    labelProfile: '4x3_standard',
   };
   return parseOfflineCustomerSlipPayload(payload);
 }
