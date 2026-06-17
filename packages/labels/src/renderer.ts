@@ -1,185 +1,271 @@
-import PDFDocument from 'pdfkit';
 import bwipjs from 'bwip-js';
 import { LabelPayload } from './payload';
-import {
-  DEFAULT_LABEL_PROFILE,
-  LabelProfile,
-  LabelProfileInput,
-  mmToPt,
-  normalizeLabelProfileName,
-  resolveLabelProfile,
-} from './profiles';
-import {
-  BARCODE,
-  ContentBox,
-  DetailRow,
-  compactAddress,
-  contentBox,
-  drawAmount,
-  drawBarcodeArea,
-  drawDetails,
-  drawHeader,
-  drawIdLine,
-  formatAmount,
-  paintPage,
-} from './labelLayout';
+import { DEFAULT_LABEL_SIZE, resolveLabelSizeInput } from './profiles';
+import type { LabelSizeInput } from './profiles';
 
-export interface LabelRenderer {
-  renderOnlineOrderLabel(payload: LabelPayload, profile: LabelProfileInput): Promise<Buffer>;
+export const TESTED_LABEL_CSS_4X3 = `@page {
+  size: 101.6mm 76.2mm;
+  margin: 0;
 }
 
-export interface LabelLayout {
-  profile: LabelProfile;
-  /** Physical PDF page (MediaBox) dimensions in points — 101.6 x 76.2 mm. */
-  physicalWidthPt: number;
-  physicalHeightPt: number;
-  /** Content box inside the tested HTML padding. */
-  box: ContentBox;
-  barcodeAreaTopPt: number;
-  barcodeWidthPt: number;
-  barcodeHeightPt: number;
-  /** PDF /Rotate — always 0. */
-  rotation: 0;
-  /** Output is always a single page. */
-  pages: 1;
+* {
+  box-sizing: border-box;
 }
 
-export function computeLabelLayout(_payload: LabelPayload, profileInput: LabelProfileInput): LabelLayout {
-  const profile = resolveLabelProfile(profileInput);
-  const box = contentBox();
-  return {
-    profile,
-    physicalWidthPt: mmToPt(profile.widthMm),
-    physicalHeightPt: mmToPt(profile.heightMm),
-    box,
-    barcodeAreaTopPt: box.bottom - mmToPt(BARCODE.areaHeightMm),
-    barcodeWidthPt: mmToPt(BARCODE.widthMm),
-    barcodeHeightPt: mmToPt(BARCODE.heightMm),
-    rotation: 0,
-    pages: 1,
-  };
+html,
+body {
+  width: 101.6mm;
+  height: 76.2mm;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #fff;
+  color: #000;
+  font-family: Arial, Helvetica, sans-serif;
 }
 
-export async function renderCode128BarcodePng(value: string, heightMm: number): Promise<Buffer> {
-  return bwipjs.toBuffer({
+.label {
+  width: 101.6mm;
+  height: 76.2mm;
+  padding: 2.5mm 3mm 4mm;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 1.5mm;
+  border-bottom: 0.6mm solid #000;
+}
+
+.brand {
+  font-size: 18px;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+}
+
+.paid {
+  border: 0.5mm solid #000;
+  padding: 1mm 2.5mm;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 800;
+}
+
+.order-id {
+  margin-top: 1.5mm;
+  font-size: 13px;
+  line-height: 1.1;
+  font-weight: 700;
+}
+
+.details {
+  margin-top: 1mm;
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  column-gap: 4mm;
+  row-gap: 0.7mm;
+  font-size: 10.5px;
+  line-height: 1.08;
+}
+
+.full {
+  grid-column: 1 / -1;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.amount {
+  margin-top: 1.4mm;
+  font-size: 15px;
+  line-height: 1;
+  font-weight: 800;
+}
+
+.barcode-area {
+  margin-top: auto;
+  height: 13mm;
+  min-height: 13mm;
+  text-align: center;
+  overflow: hidden;
+}
+
+#barcode {
+  display: block;
+  width: 86mm;
+  height: 9mm;
+  margin: 0 auto;
+}
+
+.barcode-text {
+  margin-top: 0.5mm;
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 1px;
+}
+
+@media print {
+  html,
+  body,
+  .label {
+    width: 101.6mm;
+    height: 76.2mm;
+  }
+}`;
+
+export function testedLabelCss(size: LabelSizeInput = DEFAULT_LABEL_SIZE): string {
+  const resolved = resolveLabelSizeInput(size);
+  if (resolved.name === '4x3') return TESTED_LABEL_CSS_4X3;
+  return TESTED_LABEL_CSS_4X3
+    .replace('size: 101.6mm 76.2mm;', 'size: 101.6mm 101.6mm;')
+    .replaceAll('height: 76.2mm;', 'height: 101.6mm;');
+}
+
+export async function renderCode128BarcodeSvg(value: string): Promise<string> {
+  const raw = bwipjs.toSVG({
     bcid: 'code128',
     text: value,
-    scale: 3,
-    height: heightMm,
+    scaleX: 1.7,
+    scaleY: 1,
+    height: 32,
     includetext: false,
-    monochrome: true,
     paddingwidth: 0,
     paddingheight: 0,
     backgroundcolor: 'FFFFFF',
     barcolor: '000000',
   });
+  return raw.replace('<svg ', '<svg id="barcode" ');
 }
 
-function newLabelDoc(profile: LabelProfile): PDFKit.PDFDocument {
-  // The PDF page is the PHYSICAL stock (101.6 x 76.2 mm). It carries no /Rotate.
-  return new PDFDocument({
-    size: [mmToPt(profile.widthMm), mmToPt(profile.heightMm)],
-    margin: 0,
-    bufferPages: false,
-    autoFirstPage: true,
-  });
-}
-
-function collect(doc: PDFKit.PDFDocument): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  return new Promise<Buffer>((resolve, reject) => {
-    doc.on('data', (chunk: Buffer) => chunks.push(chunk));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
-  });
-}
-
-export class PdfLabelRenderer implements LabelRenderer {
-  async renderOnlineOrderLabel(payload: LabelPayload, profileInput: LabelProfileInput): Promise<Buffer> {
-    const profile = resolveLabelProfile(profileInput);
-    const box = contentBox();
-    const barcode = await renderCode128BarcodePng(payload.barcodeValue, BARCODE.heightMm);
-
-    const doc = newLabelDoc(profile);
-    doc.info.CreationDate = new Date(0);
-    doc.info.Producer = 'kda-labels';
-    doc.info.Creator = 'kda-labels';
-    doc.info.Title = `${payload.orderId}-${profile.name}`;
-    const done = collect(doc);
-
-    paintPage(doc);
-    drawOnlineOrderBody(doc, payload, box, barcode);
-    doc.end();
-    return done;
-  }
-}
-
-export const defaultLabelRenderer: LabelRenderer = new PdfLabelRenderer();
-
-export function renderOrderLabel(
+export async function renderOnlineOrderHtml(
   payload: LabelPayload,
-  profile: LabelProfileInput = payload.labelProfile ?? DEFAULT_LABEL_PROFILE,
-): Promise<Buffer> {
-  return renderOnlineOrderLabel(payload, profile);
+  size: LabelSizeInput = DEFAULT_LABEL_SIZE,
+): Promise<string> {
+  const barcodeSvg = await renderCode128BarcodeSvg(payload.barcodeValue);
+  return htmlDocument(testedLabelCss(size), `<body>
+  <main class="label">
+    <header class="header">
+      <div class="brand">KANIKA DESIGNS</div>
+      <div class="paid">PAID</div>
+    </header>
+
+    <div class="order-id">
+      Order ID: ${escapeHtml(payload.orderId)}
+    </div>
+
+    <section class="details">
+      <div class="full truncate">
+        <strong>Customer:</strong> ${escapeHtml(payload.customerName)}
+      </div>
+
+      <div>
+        <strong>Phone:</strong> ${escapeHtml(phone(payload))}
+      </div>
+
+      <div>
+        <strong>Pincode:</strong> ${escapeHtml(payload.pincode || '-')}
+      </div>
+
+      <div class="full truncate">
+        <strong>Address:</strong> ${escapeHtml(compactAddress(payload))}
+      </div>
+
+      <div class="full truncate">
+        <strong>Product:</strong> ${escapeHtml(payload.productName)}
+      </div>
+
+      <div>
+        <strong>SKU:</strong> ${escapeHtml(payload.sku || '-')}
+      </div>
+
+      <div>
+        <strong>Size:</strong> ${escapeHtml(payload.size || '-')}
+      </div>
+
+      <div>
+        <strong>Quantity:</strong> ${escapeHtml(String(payload.quantity))}
+      </div>
+
+      <div>
+        <strong>Payment:</strong> ${escapeHtml(payload.paymentType || payload.paymentStatus || '-')}
+      </div>
+    </section>
+
+    <div class="amount">
+      Amount: ₹${escapeHtml(formatAmount(payload.amount))}
+    </div>
+
+    <section class="barcode-area">
+      ${barcodeSvg}
+      <div class="barcode-text">${escapeHtml(payload.orderId)}</div>
+    </section>
+  </main>
+</body>`);
 }
 
-export function renderOnlineOrderLabel(
-  payload: LabelPayload,
-  profile: LabelProfileInput = payload.labelProfile ?? DEFAULT_LABEL_PROFILE,
-): Promise<Buffer> {
-  if (typeof profile === 'object') return defaultLabelRenderer.renderOnlineOrderLabel(payload, profile);
-  return defaultLabelRenderer.renderOnlineOrderLabel(payload, normalizeLabelProfileName(profile));
+export function renderOnlineOrderLabel(payload: LabelPayload, size: LabelSizeInput = DEFAULT_LABEL_SIZE): Promise<string> {
+  return renderOnlineOrderHtml(payload, size);
 }
 
-export function renderTestLabel(
-  payload: LabelPayload,
-  profile: LabelProfileInput = payload.labelProfile ?? DEFAULT_LABEL_PROFILE,
-): Promise<Buffer> {
-  return renderOnlineOrderLabel(payload, profile);
+export function renderOrderLabel(payload: LabelPayload, size: LabelSizeInput = DEFAULT_LABEL_SIZE): Promise<string> {
+  return renderOnlineOrderHtml(payload, size);
 }
 
-/**
- * TEMPLATE 2 — automated online order label (ORDER_LABEL). Same shared geometry
- * as the manual receipt, but its body adds the customer delivery address.
- */
-function drawOnlineOrderBody(
-  doc: PDFKit.PDFDocument,
-  payload: LabelPayload,
-  box: ContentBox,
-  barcode: Buffer,
-): void {
-  const headerBottom = drawHeader(doc, box, payload.storeName, (payload.paymentStatus || 'PAID').toUpperCase());
-  const idBottom = drawIdLine(doc, box, headerBottom, `Order ID: ${payload.orderId}`);
+export function renderTestLabelHtml(payload: LabelPayload, size: LabelSizeInput = DEFAULT_LABEL_SIZE): Promise<string> {
+  return renderOnlineOrderHtml(payload, size);
+}
 
-  const rows: DetailRow[] = [
-    { type: 'full', label: 'Customer:', value: safeValue(payload.customerName) },
-    {
-      type: 'pair',
-      left: { label: 'Phone:', value: phone(payload) },
-      right: { label: 'Pincode:', value: payload.pincode || '-' },
-    },
-    { type: 'full', label: 'Address:', value: compactAddress(payload) },
-    { type: 'full', label: 'Product:', value: safeValue(payload.productName) },
-    {
-      type: 'pair',
-      left: { label: 'SKU:', value: payload.sku || '-' },
-      right: { label: 'Size:', value: payload.size || '-' },
-    },
-    {
-      type: 'pair',
-      left: { label: 'Quantity:', value: String(payload.quantity) },
-      right: { label: 'Payment:', value: (payload.paymentStatus || 'PAID').toUpperCase() },
-    },
-  ];
-  const detailsBottom = drawDetails(doc, box, idBottom + mmToPt(1), rows);
-  drawAmount(doc, box, detailsBottom, `Amount: Rs ${formatAmount(payload.amount)}`);
-  drawBarcodeArea(doc, box, barcode, payload.barcodeValue);
+export function renderTestLabel(payload: LabelPayload, size: LabelSizeInput = DEFAULT_LABEL_SIZE): Promise<string> {
+  return renderTestLabelHtml(payload, size);
+}
+
+export function compactAddress(parts: {
+  addressLine1?: string;
+  addressLine2?: string;
+  city?: string;
+  state?: string;
+}): string {
+  const joined = [parts.addressLine1, parts.addressLine2, parts.city, parts.state]
+    .map((part) => (part ?? '').trim())
+    .filter(Boolean)
+    .join(', ');
+  return joined || 'Not provided';
+}
+
+function htmlDocument(css: string, body: string): string {
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+${css}
+  </style>
+</head>
+${body}
+</html>`;
 }
 
 function phone(payload: LabelPayload): string {
   return payload.phoneMasked || payload.maskedPhone || '-';
 }
 
-function safeValue(value: string): string {
-  return value || '-';
+function formatAmount(value: number): string {
+  return Number.isFinite(value) ? Math.round(value).toString() : '0';
+}
+
+export function escapeHtml(value: string): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }

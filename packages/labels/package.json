@@ -7,17 +7,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
-    "preview:4x3-rotated": "ts-node --transpile-only scripts/preview.ts"
+    "test": "vitest run"
   },
   "dependencies": {
     "bwip-js": "^4.5.1",
-    "pdfkit": "^0.15.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",
-    "@types/pdfkit": "^0.13.5",
     "typescript": "5.9.3",
     "vitest": "^2.1.8"
   }

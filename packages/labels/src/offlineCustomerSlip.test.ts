@@ -1,13 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { mmToPt } from './profiles';
-import { PAD, PAGE, contentBox } from './labelLayout';
+import { TESTED_LABEL_CSS_4X3 } from './renderer';
 import {
-  computeOfflineSlipLayout,
   parseOfflineCustomerSlipPayload,
   renderManualReceipt,
+  renderManualReceiptHtml,
   renderOfflineCustomerSlip,
 } from './offlineCustomerSlip';
-import { countPdfPages, extractPdfText, readPdfRotation, validateLabelPdfSize } from './validate';
 
 const payload = parseOfflineCustomerSlipPayload({
   templateVersion: 'manual-receipt-v1',
@@ -32,55 +30,44 @@ const payload = parseOfflineCustomerSlipPayload({
     },
   ],
   barcodeValue: 'MR-2026-0001',
-  labelProfile: '4x3_standard',
 });
 
-describe('manual receipt (offline customer slip) renderer', () => {
-  test('PDF is exactly 101.6 x 76.2 mm, one page, no rotation', async () => {
-    const pdf = await renderManualReceipt(payload);
-    const validation = validateLabelPdfSize(pdf, '4x3_standard', 0.6);
-
-    expect(validation.ok).toBe(true);
-    expect(validation.actual?.widthPt).toBeCloseTo(mmToPt(101.6), 0);
-    expect(validation.actual?.heightPt).toBeCloseTo(mmToPt(76.2), 0);
-    expect(validation.rotation).toBe(0);
-    expect(readPdfRotation(pdf)).toBe(0);
-    expect(countPdfPages(pdf)).toBe(1);
+describe('manual receipt HTML renderer', () => {
+  test('uses the exact tested 4x3 CSS and receipt body', async () => {
+    const html = await renderManualReceiptHtml(payload, '4x3');
+    expect(html).toContain(TESTED_LABEL_CSS_4X3);
+    expect(html).toContain('<div class="paid">RECEIPT</div>');
+    expect(html).toContain('Receipt ID: MR-2026-0001');
+    expect(html).toContain('<strong>Customer:</strong> test-1');
+    expect(html).toContain('<strong>Phone:</strong> 74XXXXXX41');
+    expect(html).toContain('<strong>Payment:</strong> CASH');
+    expect(html).toContain('<strong>Product:</strong> Three-piece Kurti');
+    expect(html).toContain('<strong>SKU:</strong> three-piece-kurtis-mq6b1e77');
+    expect(html).toContain('<strong>Size:</strong> 38');
+    expect(html).toContain('<strong>Quantity:</strong> 1');
+    expect(html).toContain('Amount: ₹1860');
+    expect(html).toContain('<div class="barcode-text">MR-2026-0001</div>');
   });
 
-  test('layout uses the full physical page with the tested HTML padding', () => {
-    const layout = computeOfflineSlipLayout('4x3_standard');
-    const box = contentBox();
-
-    expect(layout.physicalWidthPt).toBeCloseTo(mmToPt(PAGE.widthMm), 5);
-    expect(layout.physicalHeightPt).toBeCloseTo(mmToPt(PAGE.heightMm), 5);
-    expect(layout.box.x).toBeCloseTo(box.x, 5);
-    expect(layout.box.y).toBeCloseTo(box.y, 5);
-    expect(box.x).toBeCloseTo(mmToPt(PAD.leftMm), 5);
-    expect(box.y).toBeCloseTo(mmToPt(PAD.topMm), 5);
-    expect(layout.rotation).toBe(0);
-    expect(layout.pages).toBe(1);
+  test('manual receipt contains no address, pincode, courier or shipping rows', async () => {
+    const html = await renderManualReceiptHtml(payload, '4x3');
+    expect(html).not.toContain('<strong>Address:</strong>');
+    expect(html).not.toContain('<strong>Pincode:</strong>');
+    expect(html).not.toContain('<strong>City:</strong>');
+    expect(html).not.toContain('<strong>State:</strong>');
+    expect(html).not.toContain('courier');
+    expect(html).not.toContain('shipping');
   });
 
-  test('manual receipt PDF contains no address, courier or shipping text', async () => {
-    const pdf = await renderManualReceipt({
-      ...payload,
-      // Even if upstream tried to smuggle address text via the product name we
-      // would not draw an Address: row — the template has no address row at all.
-    });
-    const text = extractPdfText(pdf);
-    expect(text).not.toContain('Address:');
-    expect(text).not.toContain('Pincode:');
-  });
-
-  test('manual receipt payload schema rejects address/courier fields', () => {
+  test('manual receipt schema strips address-like fields instead of rendering them', () => {
     const parsed = parseOfflineCustomerSlipPayload({
       ...payload,
-      addressLine1: 'Should be ignored',
-      addressLine2: 'Should be ignored',
-      city: 'Should be ignored',
-      state: 'Should be ignored',
+      addressLine1: 'Should not exist',
+      addressLine2: 'Should not exist',
+      city: 'Should not exist',
+      state: 'Should not exist',
       pincode: '000000',
+      courier: 'Should not exist',
     });
 
     expect('addressLine1' in parsed).toBe(false);
@@ -88,26 +75,36 @@ describe('manual receipt (offline customer slip) renderer', () => {
     expect('city' in parsed).toBe(false);
     expect('state' in parsed).toBe(false);
     expect('pincode' in parsed).toBe(false);
+    expect('courier' in parsed).toBe(false);
   });
 
-  test('long product name does not change page count and truncates', async () => {
-    const first = payload.items[0]!;
-    const pdf = await renderOfflineCustomerSlip({
-      ...payload,
-      items: [
-        {
-          name: 'Very Long Three-piece Kurti Product Name With Extra Embroidery And Dupatta That Must Truncate',
-          sku: first.sku,
-          size: first.size,
-          quantity: first.quantity,
-          unitPrice: first.unitPrice,
-          amount: first.amount,
-        },
-      ],
-    });
+  test('manual receipt aliases return the same HTML template', async () => {
+    const html = await renderManualReceiptHtml(payload, '4x3');
+    await expect(renderManualReceipt(payload, '4x3')).resolves.toBe(html);
+    await expect(renderOfflineCustomerSlip(payload, '4x3')).resolves.toBe(html);
+  });
 
-    expect(countPdfPages(pdf)).toBe(1);
-    expect(validateLabelPdfSize(pdf, '4x3_standard', 0.6).ok).toBe(true);
-    expect(readPdfRotation(pdf)).toBe(0);
+  test('multiple items are summarized without adding a second template body', async () => {
+    const html = await renderManualReceiptHtml(
+      {
+        ...payload,
+        items: [
+          payload.items[0]!,
+          {
+            name: 'Second Item',
+            sku: 'SKU-2',
+            size: '42',
+            quantity: 2,
+            unitPrice: 500,
+            amount: 1000,
+          },
+        ],
+      },
+      '4x3',
+    );
+
+    expect(html).toContain('Three-piece Kurti +1 more');
+    expect(html).toContain('<strong>Quantity:</strong> 3');
+    expect(html.match(/<main class="label">/g)).toHaveLength(1);
   });
 });

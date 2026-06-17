@@ -235,12 +235,7 @@ PRINTER_NAME=4BARCODE 4B-2054TG
 POLL_INTERVAL_MS=3000
 HEARTBEAT_INTERVAL_MS=30000
 PRINT_JOB_BATCH_SIZE=1
-LABEL_PROFILE=4x3_standard
-LABEL_WIDTH_MM=101.6
-LABEL_HEIGHT_MM=76.2
-PRINT_ORIENTATION=portrait
-PRINT_ROTATION=0
-PRINT_SCALE_MODE=noscale
+LABEL_SIZE=4x3
 PRINT_DRY_RUN=true
 OUTPUT_DIR=./print-output
 ```
@@ -249,24 +244,24 @@ Commands:
 
 ```bash
 npm install
+npx playwright install chromium
 npm run printers:list
 npm run printer:diagnose
-npm run bridge:dry-run
-npm run print:test
+npm run bridge:dry-run -- --template=manual-receipt
+npm run bridge:dry-run -- --template=online-order-label
+npm run print:test -- --template=manual-receipt
+npm run print:test -- --template=online-order-label
 npm run bridge:start
 ```
 
-For the first physical test, keep `PRINT_DRY_RUN=true` and confirm the PDF in `apps/print-bridge/print-output`. Then set `PRINT_DRY_RUN=false`, ensure the Windows printer default paper/form is `Kanika-4x3`, set printer orientation to portrait/normal with no scaling, and run `npm run print:test`. The PDF page remains 101.6 x 76.2 mm; the label design is a centered 96 x 68 mm box.
+For the first physical test, keep `PRINT_DRY_RUN=true` and confirm the HTML/PDF in `apps/print-bridge/print-output`. Then set `PRINT_DRY_RUN=false`, keep the Windows driver on the manually tested 4x3 stock, and run both `print:test` commands above. The bridge does not pass orientation, scaling, fitting, paper-size, or rotation options to Windows.
 
-Current 4x3 standard:
+Current 4x3 HTML renderer:
 
 - PDF physical page: `101.6 mm x 76.2 mm`
-- Designed content box: `96 mm x 68 mm`
-- Offset: `2.8 mm` horizontal, `4.1 mm` vertical
-- Renderer rotation: `0`
+- HTML/CSS source: tested full-page label CSS
 - PDF rotation metadata: `0`
-- Windows orientation: `Portrait / Normal`
-- Scale mode: `noscale`
+- Windows print call: `{ printer: PRINTER_NAME }`
 
 Cookie notes:
 

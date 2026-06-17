@@ -25,9 +25,7 @@ const DeviceSchema = z.object({
 
 const HeartbeatSchema = DeviceSchema.extend({
   printerName: z.string().optional(),
-  labelProfile: z.enum(['4x3_standard']).optional(),
-  printOrientation: z.enum(['portrait']).optional(),
-  printRotation: z.number().int().optional(),
+  labelSize: z.enum(['4x3', '4x4']).optional(),
   printJobBatchSize: z.literal(1).optional(),
   dryRun: z.boolean().optional(),
 });

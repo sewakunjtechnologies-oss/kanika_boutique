@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { normalizeLabelProfileName } from './profiles';
-import type { AnyLabelProfileName, LabelProfileName } from './profiles';
+import type { LabelSizeName } from './profiles';
 
 // Stable, typed label payload (Phase 4). This is what the backend stores on a
 // PrintJob and what the bridge renders. It deliberately contains NO secrets:
@@ -29,12 +28,6 @@ const RawLabelPayloadSchema = z.object({
   city: z.string().default(''),
   state: z.string().default(''),
   pincode: z.string().default(''),
-  labelProfile: z
-    .custom<AnyLabelProfileName>((value) =>
-      ['4x3_standard', 'compact_96x68', '4x3', '4x3_landscape', '4x4_portrait', '4x4'].includes(String(value)),
-    )
-    .default('4x3_standard')
-    .transform((value) => normalizeLabelProfileName(value)),
 });
 
 export const LabelPayloadSchema = z.preprocess((value) => {
@@ -78,5 +71,5 @@ export function autoOrderLabelIdempotencyKey(orderId: string, paymentId: string)
 
 export interface LabelRenderRequest {
   payload: LabelPayload;
-  profile: LabelProfileName;
+  labelSize: LabelSizeName;
 }

@@ -9,7 +9,8 @@ type TemplateName = 'manual-receipt' | 'online-order-label' | 'test-label';
 
 function requestedTemplate(): TemplateName {
   const arg = process.argv.slice(3).find((value) => value.startsWith('--template='));
-  const raw = arg ? arg.slice('--template='.length) : 'test-label';
+  if (!arg) throw new Error('Missing --template=manual-receipt | --template=online-order-label | --template=test-label');
+  const raw = arg.slice('--template='.length);
   if (raw === 'manual-receipt' || raw === 'online-order-label' || raw === 'test-label') return raw;
   throw new Error(`Unknown template: ${raw} (expected manual-receipt | online-order-label | test-label)`);
 }
@@ -83,7 +84,6 @@ function sampleJob(template: TemplateName): PrintJobDto {
           { name: 'Pure Cotton Suit With Long Name', sku: 'KD-PCS-101', size: '40', quantity: 1, unitPrice: 2270, amount: 2270 },
         ],
         barcodeValue: 'MR-2026-0001',
-        labelProfile: '4x3_standard',
       },
     };
   }
@@ -107,7 +107,6 @@ function sampleJob(template: TemplateName): PrintJobDto {
     paymentStatus: 'PAID',
     amount: 2270,
     barcodeValue: 'KD-TEST-1001',
-    labelProfile: bridgeEnv.LABEL_PROFILE,
   };
 
   if (template === 'online-order-label') {

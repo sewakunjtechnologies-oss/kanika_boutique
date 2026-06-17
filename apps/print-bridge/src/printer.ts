@@ -2,78 +2,113 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { getDefaultPrinter, getPrinters, print } from 'pdf-to-printer';
-import type { PrintOptions } from 'pdf-to-printer';
+import { chromium } from 'playwright';
 import {
-  LabelProfile,
   parseLabelPayload,
   parseOfflineCustomerSlipPayload,
-  renderManualReceipt,
-  renderOnlineOrderLabel,
-  renderTestLabel,
-  resolveLabelProfile,
+  renderManualReceiptHtml,
+  renderOnlineOrderHtml,
+  renderTestLabelHtml,
+  resolveLabelSize,
   validateLabelPdfSize,
 } from '@kda/labels';
 import { bridgeEnv, outputPath } from './config';
 import type { PrintJobDto } from './backendClient';
 
+interface RenderedHtml {
+  html: string;
+  renderer: JobDispatch['renderer'];
+}
+
 export async function renderJobPdf(job: PrintJobDto): Promise<string> {
-  const profile = selectedBridgeProfile();
   logRenderDiagnostics(job);
-  const pdf = await renderPdfForJob(job, profile);
-  const validation = validateLabelPdfSize(pdf, profile, 0.6);
+  const rendered = await renderHtmlForJob(job);
+  const pdf = await htmlToPdf(rendered.html);
+  const validation = validateLabelPdfSize(pdf, bridgeEnv.LABEL_SIZE, 0.6);
   if (!validation.ok) {
     throw new Error(`generated PDF size mismatch: ${validation.reason ?? 'unknown'}`);
   }
+
   await fs.mkdir(outputPath(), { recursive: true });
-  const filename = `${job.id}-${profile.name}.pdf`;
-  const filePath = outputPath(filename);
-  await fs.writeFile(filePath, pdf);
-  return filePath;
+  const base = `${job.id}-${bridgeEnv.LABEL_SIZE}`;
+  const htmlPath = outputPath(`${base}.html`);
+  const pdfPath = outputPath(`${base}.pdf`);
+  await fs.writeFile(htmlPath, rendered.html, 'utf8');
+  await fs.writeFile(pdfPath, pdf);
+  // eslint-disable-next-line no-console
+  console.log(`HTML renderer=${rendered.renderer} html=${htmlPath} pdf=${pdfPath}`);
+  return pdfPath;
 }
 
-async function renderPdfForJob(job: PrintJobDto, profile: LabelProfile): Promise<Buffer> {
+async function renderHtmlForJob(job: PrintJobDto): Promise<RenderedHtml> {
   if (job.type === 'ORDER_LABEL') {
     const payload = parseLabelPayload(job.payload);
     if (payload.templateVersion !== 'online-order-label-v1') {
       throw new Error(`template mismatch for ORDER_LABEL: ${payload.templateVersion}`);
     }
-    return renderOnlineOrderLabel({ ...payload, labelProfile: profile.name }, profile);
+    return {
+      html: await renderOnlineOrderHtml(payload, bridgeEnv.LABEL_SIZE),
+      renderer: 'renderOnlineOrderHtml',
+    };
   }
   if (job.type === 'TEST_LABEL') {
     const payload = parseLabelPayload(job.payload);
     if (payload.templateVersion !== 'test-label-v1') {
       throw new Error(`template mismatch for TEST_LABEL: ${payload.templateVersion}`);
     }
-    return renderTestLabel({ ...payload, labelProfile: profile.name }, profile);
+    return {
+      html: await renderTestLabelHtml(payload, bridgeEnv.LABEL_SIZE),
+      renderer: 'renderTestLabelHtml',
+    };
   }
   if (job.type === 'OFFLINE_CUSTOMER_SLIP') {
     const payload = parseOfflineCustomerSlipPayload(job.payload);
     if (payload.templateVersion !== 'manual-receipt-v1') {
       throw new Error(`template mismatch for OFFLINE_CUSTOMER_SLIP: ${payload.templateVersion}`);
     }
-    return renderManualReceipt({ ...payload, labelProfile: '4x3_standard' }, profile);
+    return {
+      html: await renderManualReceiptHtml(payload, bridgeEnv.LABEL_SIZE),
+      renderer: 'renderManualReceiptHtml',
+    };
   }
   throw new Error(`unsupported print job type: ${job.type}`);
 }
 
-export async function printPdf(filePath: string): Promise<void> {
-  const profile = selectedBridgeProfile();
-  if (profile.rotation !== 0) {
-    throw new Error('Label printing only supports rotation 0 for the 4BARCODE media profile.');
+export async function htmlToPdf(html: string): Promise<Buffer> {
+  const size = resolveLabelSize(bridgeEnv.LABEL_SIZE);
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({
+      viewport: {
+        width: Math.round((size.widthMm / 25.4) * 96),
+        height: Math.round((size.heightMm / 25.4) * 96),
+      },
+      deviceScaleFactor: 1,
+    });
+    await page.setContent(html, { waitUntil: 'load' });
+    await page.waitForSelector('#barcode', { state: 'attached' });
+    await page.evaluate('document.fonts ? document.fonts.ready : Promise.resolve()');
+    const pdf = await page.pdf({
+      width: `${size.widthMm}mm`,
+      height: `${size.heightMm}mm`,
+      printBackground: true,
+      margin: {
+        top: '0mm',
+        right: '0mm',
+        bottom: '0mm',
+        left: '0mm',
+      },
+      preferCSSPageSize: true,
+    });
+    return Buffer.from(pdf);
+  } finally {
+    await browser.close();
   }
-  const options: PrintOptions = {
-    printer: bridgeEnv.PRINTER_NAME,
-    scale: bridgeEnv.PRINT_SCALE_MODE,
-    orientation: profile.orientation,
-    paperSize: profile.paperSizeName,
-    monochrome: true,
-    silent: true,
-    copies: 1,
-  };
+}
+
+export async function printPdf(filePath: string): Promise<void> {
   // eslint-disable-next-line no-console
-  console.log(
-    `Print selected: printer="${bridgeEnv.PRINTER_NAME}" profile=${profile.name} pdf=${profile.widthMm}x${profile.heightMm}mm orientation=${profile.orientation} rotation=${profile.rotation} paper="${profile.paperSizeName}" scale=${bridgeEnv.PRINT_SCALE_MODE} dryRun=${bridgeEnv.PRINT_DRY_RUN}`,
-  );
+  console.log(`Print selected: printer="${bridgeEnv.PRINTER_NAME}" labelSize=${bridgeEnv.LABEL_SIZE} dryRun=${bridgeEnv.PRINT_DRY_RUN}`);
   if (bridgeEnv.PRINT_DRY_RUN) {
     // eslint-disable-next-line no-console
     console.log(`Dry-run enabled; not sending PDF to printer. PDF saved at ${filePath}`);
@@ -81,7 +116,7 @@ export async function printPdf(filePath: string): Promise<void> {
   }
   // eslint-disable-next-line no-console
   console.log(`Print start: ${filePath}`);
-  await print(filePath, options);
+  await print(filePath, { printer: bridgeEnv.PRINTER_NAME });
   // eslint-disable-next-line no-console
   console.log(`Print complete: ${filePath}`);
 }
@@ -107,37 +142,20 @@ export async function buildDiagnostic(): Promise<Record<string, unknown>> {
     printerError = err instanceof Error ? err.message : 'failed to list printers';
   }
 
-  const selectedProfile = selectedBridgeProfile();
+  const selectedSize = resolveLabelSize(bridgeEnv.LABEL_SIZE);
   return {
     selectedPrinter: bridgeEnv.PRINTER_NAME,
     installedPrinters,
     defaultPrinter: await getDefaultPrinterSafe(),
     platform: os.platform(),
     release: os.release(),
-    labelProfile: bridgeEnv.LABEL_PROFILE,
+    labelSize: bridgeEnv.LABEL_SIZE,
     printJobBatchSize: bridgeEnv.PRINT_JOB_BATCH_SIZE,
     renderDiagnostics: renderDiagnostics(),
     pdf: {
-      widthMm: selectedProfile.widthMm,
-      heightMm: selectedProfile.heightMm,
-      designWidthMm: selectedProfile.designWidthMm,
-      designHeightMm: selectedProfile.designHeightMm,
-      contentWidthMm: selectedProfile.contentWidthMm,
-      contentHeightMm: selectedProfile.contentHeightMm,
-      offsetXmm: selectedProfile.offsetXmm,
-      offsetYmm: selectedProfile.offsetYmm,
-      orientation: selectedProfile.orientation,
-      rotation: selectedProfile.rotation,
-      rendererRotation: selectedProfile.rendererRotation,
-    },
-    expectedDimensionsMm: {
-      width: selectedProfile.widthMm,
-      height: selectedProfile.heightMm,
-      safeWidth: selectedProfile.safeWidthMm,
-      safeHeight: selectedProfile.safeHeightMm,
-      orientation: selectedProfile.orientation,
-      rotation: selectedProfile.rotation,
-      paperSize: selectedProfile.paperSizeName,
+      widthMm: selectedSize.widthMm,
+      heightMm: selectedSize.heightMm,
+      rotation: 0,
     },
     dryRun: bridgeEnv.PRINT_DRY_RUN,
     backendUrl: bridgeEnv.BACKEND_URL,
@@ -147,47 +165,26 @@ export async function buildDiagnostic(): Promise<Record<string, unknown>> {
   };
 }
 
-function selectedBridgeProfile(): LabelProfile {
-  const base = resolveLabelProfile(bridgeEnv.LABEL_PROFILE);
-  return resolveLabelProfile(base, {
-    widthMm: bridgeEnv.LABEL_WIDTH_MM ?? base.widthMm,
-    heightMm: bridgeEnv.LABEL_HEIGHT_MM ?? base.heightMm,
-    orientation: bridgeEnv.PRINT_ORIENTATION,
-    rotation: bridgeEnv.PRINT_ROTATION,
-  });
-}
-
-/**
- * Explicit bridge dispatch mapping. Each PrintJob type maps to exactly one
- * template name and one dedicated renderer function — the manual receipt and
- * the online label never share a body template.
- */
 export interface JobDispatch {
   requestedTemplate: 'manual-receipt' | 'online-order-label' | 'test-label';
-  renderer: 'renderManualReceipt' | 'renderOnlineOrderLabel' | 'renderTestLabel';
+  renderer: 'renderManualReceiptHtml' | 'renderOnlineOrderHtml' | 'renderTestLabelHtml';
 }
 
 export function dispatchForJobType(type: PrintJobDto['type']): JobDispatch {
   switch (type) {
     case 'OFFLINE_CUSTOMER_SLIP':
-      return { requestedTemplate: 'manual-receipt', renderer: 'renderManualReceipt' };
+      return { requestedTemplate: 'manual-receipt', renderer: 'renderManualReceiptHtml' };
     case 'ORDER_LABEL':
-      return { requestedTemplate: 'online-order-label', renderer: 'renderOnlineOrderLabel' };
+      return { requestedTemplate: 'online-order-label', renderer: 'renderOnlineOrderHtml' };
     case 'TEST_LABEL':
-      return { requestedTemplate: 'test-label', renderer: 'renderTestLabel' };
+      return { requestedTemplate: 'test-label', renderer: 'renderTestLabelHtml' };
     default:
       throw new Error(`unsupported print job type: ${type}`);
   }
 }
 
-/**
- * Renderer/printer diagnostics. The current 4BARCODE media profile keeps all
- * rotation values at 0: the PDF page is physically 101.6 x 76.2 mm laid out as
- * a single full-page canvas (no 96x68 profile), and Windows prints Portrait /
- * Normal at 100% with no fit or auto-rotation.
- */
 export function renderDiagnostics(job?: PrintJobDto): Record<string, string | number | boolean> {
-  const profile = selectedBridgeProfile();
+  const size = resolveLabelSize(bridgeEnv.LABEL_SIZE);
   const dispatch = job ? dispatchForJobType(job.type) : null;
   return {
     requestedTemplate: dispatch?.requestedTemplate ?? 'unknown',
@@ -195,14 +192,9 @@ export function renderDiagnostics(job?: PrintJobDto): Record<string, string | nu
     renderer: dispatch?.renderer ?? 'unknown',
     jobId: job?.id ?? '',
     receiptId: job?.type === 'OFFLINE_CUSTOMER_SLIP' ? String((job.payload as { receiptId?: unknown }).receiptId ?? '') : '',
-    profile: profile.name,
-    physicalPage: `${profile.widthMm}x${profile.heightMm}mm`,
-    rotation: profile.rotation,
-    rendererRotation: profile.rendererRotation,
-    pdfRotation: profile.rotation,
-    windowsOrientation: bridgeEnv.PRINT_ORIENTATION,
-    windowsRotation: bridgeEnv.PRINT_ROTATION,
-    scale: bridgeEnv.PRINT_SCALE_MODE,
+    labelSize: bridgeEnv.LABEL_SIZE,
+    physicalPage: `${size.widthMm}x${size.heightMm}mm`,
+    rotation: 0,
     selectedPrinter: bridgeEnv.PRINTER_NAME,
     dryRun: bridgeEnv.PRINT_DRY_RUN,
   };
@@ -220,10 +212,7 @@ function logRenderDiagnostics(job: PrintJobDto): void {
       `rotation=${d.rotation}`,
       d.jobId ? `jobId=${d.jobId}` : '',
       d.receiptId ? `receiptId=${d.receiptId}` : '',
-      `profile=${d.profile}`,
-      `windowsOrientation=${d.windowsOrientation}`,
-      `windowsRotation=${d.windowsRotation}`,
-      `scale=${d.scale}`,
+      `labelSize=${d.labelSize}`,
       `selectedPrinter=${d.selectedPrinter}`,
       `dryRun=${d.dryRun}`,
     ].filter(Boolean).join('\n'),

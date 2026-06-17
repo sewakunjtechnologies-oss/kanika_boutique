@@ -147,7 +147,6 @@ export async function createTestLabelJob(requestedBy = 'print-agent'): Promise<P
     amount: 2270,
     barcodeValue: 'KD-TEST-1001',
     addressLine: 'H.No. 25, Sector 14',
-    labelProfile: '4x3_standard',
   };
 
   return prisma.printJob.create({
@@ -385,7 +384,6 @@ export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
     addressLine2: address.addressLine2,
     city: order.shippingCity,
     state: order.shippingState,
-    labelProfile: '4x3_standard',
   };
 }
 
@@ -411,7 +409,6 @@ export function buildManualReceiptSlipPayload(receipt: ManualReceiptForSlip): Of
       amount: moneyNumber(item.unitPrice) * item.quantity,
     })),
     barcodeValue: receipt.receiptNumber,
-    labelProfile: '4x3_standard',
   };
   return parseOfflineCustomerSlipPayload(payload);
 }

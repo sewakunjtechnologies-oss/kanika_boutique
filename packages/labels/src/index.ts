@@ -1,6 +1,6 @@
-// @kda/labels — shared label payload, profiles, PDF renderer and validation.
-// Node-only (depends on pdfkit + bwip-js); must NOT be imported by the browser
-// dashboard bundle. Used by @kda/backend and apps/print-bridge.
+// @kda/labels — shared print payloads, label sizes, tested HTML templates,
+// barcode generation and PDF validation. Production PDF rendering happens in
+// the local print bridge through Playwright/Chromium.
 
 export * from './profiles';
 export * from './payload';

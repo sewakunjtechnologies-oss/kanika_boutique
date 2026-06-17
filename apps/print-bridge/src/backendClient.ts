@@ -23,9 +23,7 @@ export async function heartbeat(): Promise<void> {
   await api.post('/api/print-agent/heartbeat', {
     deviceId: bridgeEnv.DEVICE_ID,
     printerName: bridgeEnv.PRINTER_NAME,
-    labelProfile: bridgeEnv.LABEL_PROFILE,
-    printOrientation: bridgeEnv.PRINT_ORIENTATION,
-    printRotation: bridgeEnv.PRINT_ROTATION,
+    labelSize: bridgeEnv.LABEL_SIZE,
     printJobBatchSize: bridgeEnv.PRINT_JOB_BATCH_SIZE,
     dryRun: bridgeEnv.PRINT_DRY_RUN,
   });

@@ -75,7 +75,6 @@ describe('print jobs', () => {
     expect(payload.city).toBe('Sonipat');
     expect(payload.state).toBe('Haryana');
     expect(payload.pincode).toBe('110001');
-    expect(payload.labelProfile).toBe('4x3_standard');
     expect(payload.productName).toBe('Blue Floral Pure Cotton Suit');
     expect(payload.sku).toBe('ARTICLE-1');
     expect(payload.size).toBe('40');
@@ -136,7 +135,6 @@ describe('print jobs', () => {
     expect('addressLine1' in payload).toBe(false);
     expect('city' in payload).toBe(false);
     expect('pincode' in payload).toBe(false);
-    expect(payload.labelProfile).toBe('4x3_standard');
   });
 
   test('existing manual receipt creates an OFFLINE_CUSTOMER_SLIP job', async () => {

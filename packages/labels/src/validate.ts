@@ -1,9 +1,9 @@
 import zlib from 'node:zlib';
-import { mmToPt, resolveLabelProfile } from './profiles';
-import type { LabelProfileInput, LabelProfileName } from './profiles';
+import { mmToPt, resolveLabelSizeInput } from './profiles';
+import type { LabelSizeInput, LabelSizeName } from './profiles';
 
-// Phase 6 — output validation: confirm a generated PDF's page size matches the
-// selected profile, so a mis-sized label can never reach the printer silently.
+// Output validation: confirm a generated PDF's page size matches the selected
+// physical label size, so a mis-sized label can never reach the printer silently.
 
 export interface PdfSize {
   widthPt: number;
@@ -52,7 +52,7 @@ export function extractPdfText(pdf: Buffer): string {
     } catch {
       decoded = raw.toString('latin1');
     }
-    // PDFKit shows text as hex strings inside TJ arrays, e.g. `[<4b41...> 0] TJ`.
+    // Some PDF renderers show text as hex strings inside TJ arrays, e.g. `[<4b41...> 0] TJ`.
     for (const tj of decoded.matchAll(/\[([^\]]*)\]\s*TJ/g)) {
       let line = '';
       for (const hex of (tj[1] ?? '').matchAll(/<([0-9a-fA-F]*)>/g)) {
@@ -84,7 +84,7 @@ export function readPdfRotation(pdf: Buffer): number {
 
 export interface LabelSizeValidation {
   ok: boolean;
-  profile: LabelProfileName;
+  labelSize: LabelSizeName;
   expected: PdfSize;
   actual: PdfSize | null;
   rotation: number;
@@ -92,30 +92,29 @@ export interface LabelSizeValidation {
 }
 
 /**
- * Validate that a rendered label PDF matches the expected profile page size
+ * Validate that a rendered label PDF matches the expected physical page size
  * within a small tolerance (sub-point rounding from mm→pt conversion).
  */
 export function validateLabelPdfSize(
   pdf: Buffer,
-  profileName: LabelProfileInput,
+  labelSize: LabelSizeInput,
   tolerancePt = 1,
 ): LabelSizeValidation {
-  const profile = resolveLabelProfile(profileName);
-  const normalizedProfileName = profile.name;
+  const size = resolveLabelSizeInput(labelSize);
   const expected: PdfSize = {
-    widthPt: mmToPt(profile.widthMm),
-    heightPt: mmToPt(profile.heightMm),
+    widthPt: mmToPt(size.widthMm),
+    heightPt: mmToPt(size.heightMm),
   };
   const actual = readPdfMediaBox(pdf);
   const rotation = readPdfRotation(pdf);
   if (!actual) {
-    return { ok: false, profile: normalizedProfileName, expected, actual: null, rotation, reason: 'no MediaBox found' };
+    return { ok: false, labelSize: size.name, expected, actual: null, rotation, reason: 'no MediaBox found' };
   }
   const widthOk = Math.abs(actual.widthPt - expected.widthPt) <= tolerancePt;
   const heightOk = Math.abs(actual.heightPt - expected.heightPt) <= tolerancePt;
   return {
     ok: widthOk && heightOk && rotation === 0,
-    profile: normalizedProfileName,
+    labelSize: size.name,
     expected,
     actual,
     rotation,

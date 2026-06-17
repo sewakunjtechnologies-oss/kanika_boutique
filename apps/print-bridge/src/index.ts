@@ -52,7 +52,7 @@ async function sendHeartbeat(): Promise<void> {
 export async function startBridge(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(
-    `Kanika print bridge started. device=${bridgeEnv.DEVICE_ID} printer="${bridgeEnv.PRINTER_NAME}" profile=${bridgeEnv.LABEL_PROFILE} batchSize=${bridgeEnv.PRINT_JOB_BATCH_SIZE} dryRun=${bridgeEnv.PRINT_DRY_RUN}`,
+    `Kanika print bridge started. device=${bridgeEnv.DEVICE_ID} printer="${bridgeEnv.PRINTER_NAME}" labelSize=${bridgeEnv.LABEL_SIZE} batchSize=${bridgeEnv.PRINT_JOB_BATCH_SIZE} dryRun=${bridgeEnv.PRINT_DRY_RUN}`,
   );
   await sendHeartbeat();
   setInterval(() => void sendHeartbeat(), bridgeEnv.HEARTBEAT_INTERVAL_MS);

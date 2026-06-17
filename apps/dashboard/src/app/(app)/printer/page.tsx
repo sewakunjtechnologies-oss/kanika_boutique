@@ -11,7 +11,7 @@ interface PrinterStatus {
   heartbeats: Array<{
     deviceId: string;
     printerName?: string;
-    labelProfile?: string;
+    labelSize?: string;
     printJobBatchSize?: number;
     dryRun?: boolean;
     lastHeartbeatAt?: string;
@@ -100,7 +100,7 @@ export default function PrinterPage(): React.ReactElement {
         <CardContent className="grid gap-3 text-sm sm:grid-cols-2">
           <Info label="Device" value={heartbeat?.deviceId ?? '-'} />
           <Info label="Printer" value={heartbeat?.printerName ?? '-'} />
-          <Info label="Label profile" value={heartbeat?.labelProfile ?? '-'} />
+          <Info label="Label size" value={heartbeat?.labelSize ?? '-'} />
           <Info label="Batch size" value={heartbeat?.printJobBatchSize ? String(heartbeat.printJobBatchSize) : '-'} />
           <Info label="Dry run" value={heartbeat ? (heartbeat.dryRun ? 'Yes' : 'No') : '-'} />
           <Info label="Last heartbeat" value={formatDate(heartbeat?.lastHeartbeatAt)} />

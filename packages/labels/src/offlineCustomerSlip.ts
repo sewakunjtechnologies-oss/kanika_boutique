@@ -1,21 +1,7 @@
-import PDFDocument from 'pdfkit';
 import { z } from 'zod';
-import { renderCode128BarcodePng } from './renderer';
-import { mmToPt, resolveLabelProfile } from './profiles';
-import type { LabelProfileInput } from './profiles';
-import {
-  BARCODE,
-  ContentBox,
-  DetailRow,
-  contentBox,
-  drawAmount,
-  drawBarcodeArea,
-  drawDetails,
-  drawHeader,
-  drawIdLine,
-  formatAmount,
-  paintPage,
-} from './labelLayout';
+import { DEFAULT_LABEL_SIZE } from './profiles';
+import type { LabelSizeInput } from './profiles';
+import { escapeHtml, renderCode128BarcodeSvg, testedLabelCss } from './renderer';
 
 const SlipItemSchema = z.object({
   name: z.string().default('Item'),
@@ -40,7 +26,6 @@ export const OfflineCustomerSlipPayloadSchema = z.object({
   total: z.number().nonnegative(),
   items: z.array(SlipItemSchema).min(1),
   barcodeValue: z.string().min(1),
-  labelProfile: z.literal('4x3_standard').default('4x3_standard'),
 });
 
 export type OfflineCustomerSlipPayload = z.infer<typeof OfflineCustomerSlipPayloadSchema>;
@@ -49,98 +34,87 @@ export function parseOfflineCustomerSlipPayload(value: unknown): OfflineCustomer
   return OfflineCustomerSlipPayloadSchema.parse(value);
 }
 
-export interface OfflineSlipLayout {
-  physicalWidthPt: number;
-  physicalHeightPt: number;
-  box: ContentBox;
-  rotation: 0;
-  pages: 1;
-}
-
-export function computeOfflineSlipLayout(profileInput: LabelProfileInput = '4x3_standard'): OfflineSlipLayout {
-  const profile = resolveLabelProfile(profileInput);
-  return {
-    physicalWidthPt: mmToPt(profile.widthMm),
-    physicalHeightPt: mmToPt(profile.heightMm),
-    box: contentBox(),
-    rotation: 0,
-    pages: 1,
-  };
-}
-
-/**
- * TEMPLATE 1 — manual receipt (OFFLINE_CUSTOMER_SLIP). Shares the tested 4x3
- * geometry with the online label but deliberately carries NO address, courier
- * or shipping fields.
- */
-export async function renderOfflineCustomerSlip(
+export async function renderManualReceiptHtml(
   rawPayload: OfflineCustomerSlipPayload,
-  profileInput: LabelProfileInput = '4x3_standard',
-): Promise<Buffer> {
+  size: LabelSizeInput = DEFAULT_LABEL_SIZE,
+): Promise<string> {
   const payload = parseOfflineCustomerSlipPayload(rawPayload);
-  const profile = resolveLabelProfile(profileInput);
-  const box = contentBox();
-  const barcode = await renderCode128BarcodePng(payload.barcodeValue, BARCODE.heightMm);
+  const item = summarizeItems(payload.items);
+  const barcodeSvg = await renderCode128BarcodeSvg(payload.barcodeValue);
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+${testedLabelCss(size)}
+  </style>
+</head>
+<body>
+  <main class="label">
+    <header class="header">
+      <div class="brand">KANIKA DESIGNS</div>
+      <div class="paid">RECEIPT</div>
+    </header>
 
-  const doc = new PDFDocument({
-    size: [mmToPt(profile.widthMm), mmToPt(profile.heightMm)],
-    margin: 0,
-    bufferPages: false,
-    autoFirstPage: true,
-  });
-  doc.info.CreationDate = new Date(0);
-  doc.info.Producer = 'kda-labels';
-  doc.info.Creator = 'kda-labels';
-  doc.info.Title = `${payload.receiptId}-offline-slip`;
+    <div class="order-id">
+      Receipt ID: ${escapeHtml(payload.receiptId)}
+    </div>
 
-  const chunks: Buffer[] = [];
-  const done = new Promise<Buffer>((resolve, reject) => {
-    doc.on('data', (chunk: Buffer) => chunks.push(chunk));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
-  });
+    <section class="details">
+      <div class="full truncate">
+        <strong>Customer:</strong> ${escapeHtml(payload.customerName)}
+      </div>
 
-  paintPage(doc);
-  drawManualReceiptBody(doc, payload, box, barcode);
-  doc.end();
-  return done;
+      <div>
+        <strong>Phone:</strong> ${escapeHtml(payload.phoneMasked || '-')}
+      </div>
+
+      <div>
+        <strong>Payment:</strong> ${escapeHtml(payload.paymentMethod)}
+      </div>
+
+      <div class="full truncate">
+        <strong>Product:</strong> ${escapeHtml(item.name)}
+      </div>
+
+      <div>
+        <strong>SKU:</strong> ${escapeHtml(item.sku || '-')}
+      </div>
+
+      <div>
+        <strong>Size:</strong> ${escapeHtml(item.size || '-')}
+      </div>
+
+      <div>
+        <strong>Quantity:</strong> ${escapeHtml(String(item.quantity))}
+      </div>
+    </section>
+
+    <div class="amount">
+      Amount: ₹${escapeHtml(formatAmount(payload.total))}
+    </div>
+
+    <section class="barcode-area">
+      ${barcodeSvg}
+      <div class="barcode-text">${escapeHtml(payload.receiptId)}</div>
+    </section>
+  </main>
+</body>
+</html>`;
 }
 
 export function renderManualReceipt(
   payload: OfflineCustomerSlipPayload,
-  profileInput: LabelProfileInput = '4x3_standard',
-): Promise<Buffer> {
-  return renderOfflineCustomerSlip(payload, profileInput);
+  size: LabelSizeInput = DEFAULT_LABEL_SIZE,
+): Promise<string> {
+  return renderManualReceiptHtml(payload, size);
 }
 
-function drawManualReceiptBody(
-  doc: PDFKit.PDFDocument,
+export function renderOfflineCustomerSlip(
   payload: OfflineCustomerSlipPayload,
-  box: ContentBox,
-  barcode: Buffer,
-): void {
-  const product = summarizeItems(payload.items);
-  const headerBottom = drawHeader(doc, box, payload.storeName, 'RECEIPT');
-  const idBottom = drawIdLine(doc, box, headerBottom, `Receipt ID: ${payload.receiptId}`);
-
-  const rows: DetailRow[] = [
-    { type: 'full', label: 'Customer:', value: safe(payload.customerName) },
-    {
-      type: 'pair',
-      left: { label: 'Phone:', value: payload.phoneMasked || '-' },
-      right: { label: 'Payment:', value: payload.paymentMethod },
-    },
-    { type: 'full', label: 'Product:', value: product.name },
-    {
-      type: 'pair',
-      left: { label: 'SKU:', value: product.sku || '-' },
-      right: { label: 'Size:', value: product.size || '-' },
-    },
-    { type: 'pair', left: { label: 'Quantity:', value: String(product.quantity) } },
-  ];
-  const detailsBottom = drawDetails(doc, box, idBottom + mmToPt(1), rows);
-  drawAmount(doc, box, detailsBottom, `Amount: Rs ${formatAmount(payload.total)}`);
-  drawBarcodeArea(doc, box, barcode, payload.barcodeValue);
+  size: LabelSizeInput = DEFAULT_LABEL_SIZE,
+): Promise<string> {
+  return renderManualReceiptHtml(payload, size);
 }
 
 interface ItemSummary {
@@ -162,6 +136,6 @@ function summarizeItems(items: OfflineCustomerSlipPayload['items']): ItemSummary
   };
 }
 
-function safe(value: string): string {
-  return value || '-';
+function formatAmount(value: number): string {
+  return Number.isFinite(value) ? Math.round(value).toString() : '0';
 }

@@ -37,3 +37,5 @@ packages/db/src/generated/
 
 # Test
 coverage/
+apps/print-bridge/tmp-test-output/
+apps/print-bridge/print-output/
