@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'vitest';
-import { getContentBox, mmToPt } from './profiles';
+import { mmToPt } from './profiles';
+import { PAD, PAGE, contentBox } from './labelLayout';
 import {
   computeOfflineSlipLayout,
   parseOfflineCustomerSlipPayload,
+  renderManualReceipt,
   renderOfflineCustomerSlip,
 } from './offlineCustomerSlip';
-import { countPdfPages, validateLabelPdfSize } from './validate';
+import { countPdfPages, extractPdfText, readPdfRotation, validateLabelPdfSize } from './validate';
 
 const payload = parseOfflineCustomerSlipPayload({
   templateVersion: 'manual-receipt-v1',
@@ -33,33 +35,62 @@ const payload = parseOfflineCustomerSlipPayload({
   labelProfile: '4x3_standard',
 });
 
-describe('offline customer slip renderer', () => {
-  test('manual slip PDF is exactly 101.6 x 76.2 mm with one page and no rotation', async () => {
-    const pdf = await renderOfflineCustomerSlip(payload);
+describe('manual receipt (offline customer slip) renderer', () => {
+  test('PDF is exactly 101.6 x 76.2 mm, one page, no rotation', async () => {
+    const pdf = await renderManualReceipt(payload);
     const validation = validateLabelPdfSize(pdf, '4x3_standard', 0.6);
 
     expect(validation.ok).toBe(true);
     expect(validation.actual?.widthPt).toBeCloseTo(mmToPt(101.6), 0);
     expect(validation.actual?.heightPt).toBeCloseTo(mmToPt(76.2), 0);
     expect(validation.rotation).toBe(0);
+    expect(readPdfRotation(pdf)).toBe(0);
     expect(countPdfPages(pdf)).toBe(1);
   });
 
-  test('content box is exactly 96 x 68 mm and centered', () => {
-    const box = getContentBox('4x3_standard');
+  test('layout uses the full physical page with the tested HTML padding', () => {
     const layout = computeOfflineSlipLayout('4x3_standard');
+    const box = contentBox();
 
-    expect(box.widthMm).toBe(96);
-    expect(box.heightMm).toBe(68);
-    expect(box.offsetXmm).toBeCloseTo(2.8, 5);
-    expect(box.offsetYmm).toBeCloseTo(4.1, 5);
-    expect(layout.contentWidthPt).toBeCloseTo(mmToPt(96), 0);
-    expect(layout.contentHeightPt).toBeCloseTo(mmToPt(68), 0);
-    expect(layout.contentOffsetXPt).toBeCloseTo(mmToPt(2.8), 0);
-    expect(layout.contentOffsetYPt).toBeCloseTo(mmToPt(4.1), 0);
+    expect(layout.physicalWidthPt).toBeCloseTo(mmToPt(PAGE.widthMm), 5);
+    expect(layout.physicalHeightPt).toBeCloseTo(mmToPt(PAGE.heightMm), 5);
+    expect(layout.box.x).toBeCloseTo(box.x, 5);
+    expect(layout.box.y).toBeCloseTo(box.y, 5);
+    expect(box.x).toBeCloseTo(mmToPt(PAD.leftMm), 5);
+    expect(box.y).toBeCloseTo(mmToPt(PAD.topMm), 5);
+    expect(layout.rotation).toBe(0);
+    expect(layout.pages).toBe(1);
   });
 
-  test('long product name does not change page count', async () => {
+  test('manual receipt PDF contains no address, courier or shipping text', async () => {
+    const pdf = await renderManualReceipt({
+      ...payload,
+      // Even if upstream tried to smuggle address text via the product name we
+      // would not draw an Address: row — the template has no address row at all.
+    });
+    const text = extractPdfText(pdf);
+    expect(text).not.toContain('Address:');
+    expect(text).not.toContain('Pincode:');
+  });
+
+  test('manual receipt payload schema rejects address/courier fields', () => {
+    const parsed = parseOfflineCustomerSlipPayload({
+      ...payload,
+      addressLine1: 'Should be ignored',
+      addressLine2: 'Should be ignored',
+      city: 'Should be ignored',
+      state: 'Should be ignored',
+      pincode: '000000',
+    });
+
+    expect('addressLine1' in parsed).toBe(false);
+    expect('addressLine2' in parsed).toBe(false);
+    expect('city' in parsed).toBe(false);
+    expect('state' in parsed).toBe(false);
+    expect('pincode' in parsed).toBe(false);
+  });
+
+  test('long product name does not change page count and truncates', async () => {
     const first = payload.items[0]!;
     const pdf = await renderOfflineCustomerSlip({
       ...payload,
@@ -77,18 +108,6 @@ describe('offline customer slip renderer', () => {
 
     expect(countPdfPages(pdf)).toBe(1);
     expect(validateLabelPdfSize(pdf, '4x3_standard', 0.6).ok).toBe(true);
-  });
-
-  test('manual receipt payload does not carry address fields', () => {
-    const parsed = parseOfflineCustomerSlipPayload({
-      ...payload,
-      addressLine1: 'Should be ignored',
-      city: 'Should be ignored',
-      pincode: '000000',
-    });
-
-    expect('addressLine1' in parsed).toBe(false);
-    expect('city' in parsed).toBe(false);
-    expect('pincode' in parsed).toBe(false);
+    expect(readPdfRotation(pdf)).toBe(0);
   });
 });

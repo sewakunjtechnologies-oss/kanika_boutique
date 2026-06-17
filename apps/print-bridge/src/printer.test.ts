@@ -115,6 +115,80 @@ describe('print bridge dry run', () => {
     expect(validation.rotation).toBe(0);
   });
 
+  test('dispatch maps each job type to its dedicated template and renderer', async () => {
+    process.env.BACKEND_URL = 'https://kanika-boutique.onrender.com';
+    process.env.PRINT_AGENT_TOKEN = 'test_print_agent_token_value_32_chars';
+    process.env.PRINTER_NAME = '4BARCODE 4B-2054TG';
+    process.env.LABEL_PROFILE = '4x3_standard';
+    process.env.PRINT_DRY_RUN = 'true';
+    vi.resetModules();
+
+    const { dispatchForJobType } = await import('./printer');
+    expect(dispatchForJobType('OFFLINE_CUSTOMER_SLIP')).toEqual({
+      requestedTemplate: 'manual-receipt',
+      renderer: 'renderManualReceipt',
+    });
+    expect(dispatchForJobType('ORDER_LABEL')).toEqual({
+      requestedTemplate: 'online-order-label',
+      renderer: 'renderOnlineOrderLabel',
+    });
+    expect(dispatchForJobType('TEST_LABEL')).toEqual({
+      requestedTemplate: 'test-label',
+      renderer: 'renderTestLabel',
+    });
+  });
+
+  test('manual receipt and online label use different renderer functions and bodies', async () => {
+    const { renderManualReceipt, renderOnlineOrderLabel } = await import('@kda/labels');
+    // Distinct functions — they share CSS/geometry, not a body template.
+    expect(renderManualReceipt).not.toBe(renderOnlineOrderLabel);
+
+    const manual = await renderManualReceipt({
+      templateVersion: 'manual-receipt-v1',
+      storeName: 'KANIKA DESIGNS',
+      receiptId: 'MR-2026-0002',
+      customerName: 'Walk-in',
+      phoneMasked: '74XXXXXX41',
+      createdAt: '2026-06-17T10:09:00.000Z',
+      paymentMethod: 'CASH',
+      subtotal: 1000,
+      delivery: 0,
+      discount: 0,
+      total: 1000,
+      items: [{ name: 'Kurti', sku: 'SKU1', size: '38', quantity: 1, unitPrice: 1000, amount: 1000 }],
+      barcodeValue: 'MR-2026-0002',
+      labelProfile: '4x3_standard',
+    });
+    const online = await renderOnlineOrderLabel({
+      templateVersion: 'online-order-label-v1',
+      storeName: 'KANIKA DESIGNS',
+      orderId: 'KD-2',
+      customerName: 'Walk-in',
+      maskedPhone: '74XXXXXX41',
+      phoneMasked: '74XXXXXX41',
+      productName: 'Kurti',
+      sku: 'SKU1',
+      size: '38',
+      quantity: 1,
+      amount: 1000,
+      paymentStatus: 'PAID',
+      paymentType: 'UPI',
+      barcodeValue: 'KD-2',
+      addressLine: 'H.No 1',
+      addressLine1: 'H.No 1',
+      addressLine2: '',
+      city: 'Sonipat',
+      state: 'Haryana',
+      pincode: '131001',
+      labelProfile: '4x3_standard',
+    });
+
+    const { extractPdfText } = await import('@kda/labels');
+    expect(extractPdfText(manual)).not.toContain('Address:');
+    expect(extractPdfText(online)).toContain('Address:');
+    expect(extractPdfText(online)).toContain('Pincode:');
+  });
+
   test('rejects old pending test labels without the current template version', async () => {
     process.env.BACKEND_URL = 'https://kanika-boutique.onrender.com';
     process.env.PRINT_AGENT_TOKEN = 'test_print_agent_token_value_32_chars';

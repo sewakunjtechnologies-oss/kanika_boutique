@@ -2,9 +2,9 @@
 //
 //   npx ts-node --transpile-only packages/labels/scripts/preview.ts
 //
-// Writes into <repo>/print-output:
-//   * automated-order-label-96x68-preview.pdf
-//   * manual-receipt-96x68-preview.pdf
+// Writes into <repo>/print-output (full-page 101.6 x 76.2 mm, no 96x68 canvas):
+//   * automated-order-label-4x3-preview.pdf
+//   * manual-receipt-4x3-preview.pdf
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -35,7 +35,7 @@ async function emit(name: string, pdf: Buffer): Promise<void> {
 async function main(): Promise<void> {
   await fs.mkdir(OUT_DIR, { recursive: true });
   await emit(
-    'automated-order-label-96x68-preview.pdf',
+    'automated-order-label-4x3-preview.pdf',
     await renderOnlineOrderLabel(
       parseLabelPayload({
         templateVersion: 'online-order-label-v1',
@@ -63,7 +63,7 @@ async function main(): Promise<void> {
     ),
   );
   await emit(
-    'manual-receipt-96x68-preview.pdf',
+    'manual-receipt-4x3-preview.pdf',
     await renderManualReceipt(
       parseOfflineCustomerSlipPayload({
         templateVersion: 'manual-receipt-v1',

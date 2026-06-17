@@ -1,3 +1,4 @@
+import zlib from 'node:zlib';
 import { mmToPt, resolveLabelProfile } from './profiles';
 import type { LabelProfileInput, LabelProfileName } from './profiles';
 
@@ -24,6 +25,55 @@ export function readPdfMediaBox(pdf: Buffer): PdfSize | null {
 export function countPdfPages(pdf: Buffer): number {
   const text = pdf.toString('latin1');
   return (text.match(/\/Type\s*\/Page\b/g) ?? []).length;
+}
+
+/**
+ * Extract the visible text drawn into a PDF by inflating its Flate content
+ * streams and reading the strings inside Tj/TJ show operators. Used by tests to
+ * assert which fields a template renders (e.g. the address row).
+ */
+export function extractPdfText(pdf: Buffer): string {
+  const out: string[] = [];
+  let index = 0;
+  while (true) {
+    const start = pdf.indexOf('stream', index);
+    if (start === -1) break;
+    // Skip the EOL after the `stream` keyword (\r\n or \n).
+    let dataStart = start + 'stream'.length;
+    if (pdf[dataStart] === 0x0d) dataStart += 1;
+    if (pdf[dataStart] === 0x0a) dataStart += 1;
+    const end = pdf.indexOf('endstream', dataStart);
+    if (end === -1) break;
+    const raw = pdf.subarray(dataStart, end);
+    index = end + 'endstream'.length;
+    let decoded: string;
+    try {
+      decoded = zlib.inflateSync(raw).toString('latin1');
+    } catch {
+      decoded = raw.toString('latin1');
+    }
+    // PDFKit shows text as hex strings inside TJ arrays, e.g. `[<4b41...> 0] TJ`.
+    for (const tj of decoded.matchAll(/\[([^\]]*)\]\s*TJ/g)) {
+      let line = '';
+      for (const hex of (tj[1] ?? '').matchAll(/<([0-9a-fA-F]*)>/g)) {
+        line += hexToLatin1(hex[1] ?? '');
+      }
+      if (line) out.push(line);
+    }
+    // Also handle plain `(text) Tj` strings if any renderer emits them.
+    for (const match of decoded.matchAll(/\(((?:\\.|[^\\()])*)\)\s*Tj/g)) {
+      out.push((match[1] ?? '').replace(/\\([()\\])/g, '$1'));
+    }
+  }
+  return out.join('\n');
+}
+
+function hexToLatin1(hex: string): string {
+  let s = '';
+  for (let i = 0; i + 1 < hex.length; i += 2) {
+    s += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+  }
+  return s;
 }
 
 export function readPdfRotation(pdf: Buffer): number {

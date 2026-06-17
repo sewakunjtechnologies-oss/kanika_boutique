@@ -158,19 +158,46 @@ function selectedBridgeProfile(): LabelProfile {
 }
 
 /**
+ * Explicit bridge dispatch mapping. Each PrintJob type maps to exactly one
+ * template name and one dedicated renderer function — the manual receipt and
+ * the online label never share a body template.
+ */
+export interface JobDispatch {
+  requestedTemplate: 'manual-receipt' | 'online-order-label' | 'test-label';
+  renderer: 'renderManualReceipt' | 'renderOnlineOrderLabel' | 'renderTestLabel';
+}
+
+export function dispatchForJobType(type: PrintJobDto['type']): JobDispatch {
+  switch (type) {
+    case 'OFFLINE_CUSTOMER_SLIP':
+      return { requestedTemplate: 'manual-receipt', renderer: 'renderManualReceipt' };
+    case 'ORDER_LABEL':
+      return { requestedTemplate: 'online-order-label', renderer: 'renderOnlineOrderLabel' };
+    case 'TEST_LABEL':
+      return { requestedTemplate: 'test-label', renderer: 'renderTestLabel' };
+    default:
+      throw new Error(`unsupported print job type: ${type}`);
+  }
+}
+
+/**
  * Renderer/printer diagnostics. The current 4BARCODE media profile keeps all
- * rotation values at 0: the PDF page is physically 101.6 x 76.2 mm, and
- * Windows prints Portrait / Normal at 100% with no fit or auto-rotation.
+ * rotation values at 0: the PDF page is physically 101.6 x 76.2 mm laid out as
+ * a single full-page canvas (no 96x68 profile), and Windows prints Portrait /
+ * Normal at 100% with no fit or auto-rotation.
  */
 export function renderDiagnostics(job?: PrintJobDto): Record<string, string | number | boolean> {
   const profile = selectedBridgeProfile();
+  const dispatch = job ? dispatchForJobType(job.type) : null;
   return {
+    requestedTemplate: dispatch?.requestedTemplate ?? 'unknown',
     jobType: job?.type ?? 'unknown',
+    renderer: dispatch?.renderer ?? 'unknown',
     jobId: job?.id ?? '',
     receiptId: job?.type === 'OFFLINE_CUSTOMER_SLIP' ? String((job.payload as { receiptId?: unknown }).receiptId ?? '') : '',
     profile: profile.name,
     physicalPage: `${profile.widthMm}x${profile.heightMm}mm`,
-    logicalCanvas: `${profile.designWidthMm}x${profile.designHeightMm}mm`,
+    rotation: profile.rotation,
     rendererRotation: profile.rendererRotation,
     pdfRotation: profile.rotation,
     windowsOrientation: bridgeEnv.PRINT_ORIENTATION,
@@ -186,14 +213,14 @@ function logRenderDiagnostics(job: PrintJobDto): void {
   // eslint-disable-next-line no-console
   console.log(
     [
+      `requestedTemplate=${d.requestedTemplate}`,
       `jobType=${d.jobType}`,
+      `renderer=${d.renderer}`,
+      `physicalPage=${d.physicalPage}`,
+      `rotation=${d.rotation}`,
       d.jobId ? `jobId=${d.jobId}` : '',
       d.receiptId ? `receiptId=${d.receiptId}` : '',
       `profile=${d.profile}`,
-      `physicalPage=${d.physicalPage}`,
-      `logicalCanvas=${d.logicalCanvas}`,
-      `rendererRotation=${d.rendererRotation}`,
-      `pdfRotation=${d.pdfRotation}`,
       `windowsOrientation=${d.windowsOrientation}`,
       `windowsRotation=${d.windowsRotation}`,
       `scale=${d.scale}`,

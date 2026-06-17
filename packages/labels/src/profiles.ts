@@ -1,12 +1,11 @@
 // Physical label profiles used by the Windows print bridge.
 //
-// Two coordinate systems matter here:
-//   * The PHYSICAL page (widthMm x heightMm) is the PDF MediaBox the printer
-//     receives. Its /Rotate metadata is always 0 and Windows always prints it
-//     "Portrait / Normal" at 100% with no fit and no driver auto-rotation.
-//   * The LOGICAL design canvas (designWidthMm x designHeightMm) is where the
-//     renderer lays out the label. `4x3_standard` uses a 96 x 68 mm logical
-//     canvas centered inside the physical 101.6 x 76.2 mm 4x3 stock.
+// There is ONE coordinate system: the physical 101.6 x 76.2 mm page is also the
+// design canvas. The renderer lays content out directly on the full page with
+// the tested HTML padding (2.5mm top, 3mm sides, 4mm bottom). There is no 96x68
+// centered canvas, no rotation and no width/height swap — the PDF MediaBox is
+// 101.6 x 76.2 mm, /Rotate is always 0, and Windows prints "Portrait / Normal"
+// at 100% with no fit and no driver auto-rotation.
 
 export type LabelProfileName = '4x3_standard';
 export type LegacyLabelProfileName = 'compact_96x68' | '4x3' | '4x3_landscape' | '4x4' | '4x4_portrait';
@@ -61,23 +60,23 @@ export const LABEL_PROFILES: Record<LabelProfileName, LabelProfile> = {
     rendererRotation: 0,
     widthMm: 101.6,
     heightMm: 76.2,
-    designWidthMm: 96,
-    designHeightMm: 68,
-    safeWidthMm: 96,
-    safeHeightMm: 68,
-    marginTopMm: 0,
-    marginRightMm: 0,
-    marginBottomMm: 0,
-    marginLeftMm: 0,
+    designWidthMm: 101.6,
+    designHeightMm: 76.2,
+    safeWidthMm: 95.6,
+    safeHeightMm: 69.7,
+    marginTopMm: 2.5,
+    marginRightMm: 3,
+    marginBottomMm: 4,
+    marginLeftMm: 3,
     barcodeHeightMm: 9,
     barcodeAreaHeightMm: 13,
     paperSizeName: 'Kanika-4x3',
     physicalWidthMm: 101.6,
     physicalHeightMm: 76.2,
-    contentWidthMm: 96,
-    contentHeightMm: 68,
-    offsetXmm: 2.8,
-    offsetYmm: 4.1,
+    contentWidthMm: 101.6,
+    contentHeightMm: 76.2,
+    offsetXmm: 0,
+    offsetYmm: 0,
     pdfRotation: 0,
     windowsOrientation: 'portrait',
     windowsRotation: 0,
