@@ -486,6 +486,35 @@ export async function markPrintJobFailed(id: string, deviceId: string, error: st
   return prisma.printJob.findUnique({ where: { id } });
 }
 
+export async function retryOldestFailedPrintJob(deviceId: string): Promise<PrintJob | null> {
+  return prisma.$transaction(async (tx) => {
+    const job = await tx.printJob.findFirst({
+      where: {
+        status: PrintJobStatus.FAILED,
+        attempts: { lt: env.PRINT_JOB_MAX_ATTEMPTS },
+      },
+      orderBy: [{ updatedAt: 'asc' }],
+    });
+    if (!job) return null;
+
+    const updated = await tx.printJob.updateMany({
+      where: {
+        id: job.id,
+        status: PrintJobStatus.FAILED,
+        attempts: { lt: env.PRINT_JOB_MAX_ATTEMPTS },
+      },
+      data: {
+        status: PrintJobStatus.PENDING,
+        claimedAt: null,
+        claimedBy: null,
+        lastError: `Retry requested by ${deviceId}`,
+      },
+    });
+    if (updated.count !== 1) return null;
+    return tx.printJob.findUnique({ where: { id: job.id } });
+  });
+}
+
 export async function cancelPendingTestLabelJobs(adminUserId: string): Promise<number> {
   const result = await prisma.printJob.updateMany({
     where: {

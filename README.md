@@ -15,7 +15,7 @@ packages/
   shared/       Cross-package zod schemas + constants
 ```
 
-**Stack:** Node 20 · TypeScript strict · Express · Next.js 14 (App Router) · Prisma + Postgres 16 · Redis 7 + BullMQ · Meta Cloud API (Graph v23.0) · **Google Gemini 2.5 Pro** · Socket.IO · PrintNode · JWT + bcrypt auth · pino · zod · vitest.
+**Stack:** Node 20 · TypeScript strict · Express · Next.js 14 (App Router) · Prisma + Postgres 16 · Redis 7 + BullMQ · Meta Cloud API (Graph v23.0) · **Google Gemini 2.5 Pro** · Socket.IO · Android TCP print bridge · server-side session cookie + bcrypt auth · pino · zod · vitest.
 
 ## Prerequisites
 
@@ -51,10 +51,12 @@ Visit **http://localhost:3030**, then log in with the seeded admin email and the
 | `META_WEBHOOK_VERIFY_TOKEN` | yes | Any random string — paste this same value into the Meta webhook config |
 | `GEMINI_API_KEY` | yes | https://aistudio.google.com/apikey |
 | `GEMINI_MODEL` | no | Default `gemini-2.5-pro`. For lower cost: `gemini-2.5-flash` |
-| `JWT_SECRET` | yes | `openssl rand -base64 64` |
+| `SESSION_SECRET` | yes | `openssl rand -base64 64` |
+| `SESSION_COOKIE_NAME`, `SESSION_COOKIE_MAX_AGE_DAYS`, `SESSION_COOKIE_SAMESITE`, `SESSION_COOKIE_SECURE` | no | Defaults: `kda.sid`, `7`, auto same-site choice, secure in production |
+| `JWT_SECRET` | no | Optional internal Socket.IO token secret. Defaults to `SESSION_SECRET` when blank |
 | `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD` | seed only | Required before creating the first admin user |
 | `ORDER_RESERVATION_MINUTES` | no | How long unpaid pending orders reserve stock before expiry |
-| `PRINT_PROVIDER`, `PRINTNODE_API_KEY`, printer IDs | optional | `manual` generates PDFs; `printnode` also sends PDFs to PrintNode |
+| `PRINT_AGENT_TOKEN` | optional | Required when Android print bridge is enabled |
 | `BUSINESS_NAME`, `UPI_ID`, `DEFAULT_SHIPPING_FEE` | yes | Also editable from `/settings` in dashboard |
 
 Empty strings are treated as missing (zod defaults apply).
@@ -107,8 +109,9 @@ cd apps/backend && npx vitest run   # state machine tests (13 cases)
 - Stock check before order creation; auto-suggest 3 alternatives by category + price proximity if OOS
 
 ### Phase 6 — Dashboard + auth
-- JWT in httpOnly cookie (7-day TTL), bcrypt hashed password
-- Next.js middleware redirects unauthenticated routes to `/login` with `?next=` preserved
+- Secure httpOnly `kda.sid` server-side session cookie (7-day TTL), bcrypt hashed password
+- Session data is stored in Redis and mirrored to Postgres, so dashboard login survives backend restarts
+- Dashboard restores `/api/auth/me` before redirecting unauthenticated users to `/login` with `?next=` preserved
 - Seed creates the initial admin only when `SEED_ADMIN_PASSWORD` is provided.
 
 ### Phase 7 — Inventory
@@ -125,12 +128,12 @@ cd apps/backend && npx vitest run   # state machine tests (13 cases)
 - `/conversations` 2-pane WhatsApp-like view
 - Color-coded message bubbles: gray (INBOUND), blue (BOT), green (OWNER_MANUAL)
 - Take over / release toggle + manual reply input
-- Live updates via Socket.IO `/dashboard` namespace (auth via JWT cookie)
+- Live updates via Socket.IO `/dashboard` namespace (auth via token fetched from `/api/auth/socket-token`)
 
 ### Phase 10 — Print
-- 80mm thermal slip HTML template with QR code (order number), itemized table, totals, customer block
-- PrintNode REST integration, auto-fires on payment approval
-- Manual "Print again" button on order detail
+- Backend creates `PrintJob` records for online order labels, manual receipt slips, return slips, and test labels
+- Android print bridge claims jobs and sends RAW TSPL commands directly to the 4BARCODE printer over TCP/Wi-Fi
+- Manual "Print again" button on order/receipt detail creates explicit reprint jobs
 
 ### Phase 11 — Dashboard polish
 - Home: 4 KPI cards (today's orders, pending verification, month revenue, low-stock variants) + recent orders table
@@ -150,10 +153,10 @@ cd apps/backend && npx vitest run   # state machine tests (13 cases)
 | Backend (`@kda/backend`) | Railway / Render / Docker | Postgres + Redis as add-ons. Set all env vars. `npm run db:migrate:deploy && npm run build && npm start` |
 | Dashboard (`@kda/dashboard`) | Vercel | Set `NEXT_PUBLIC_BACKEND_URL` to your backend's public URL |
 | Meta webhook | Point at backend's public URL `/webhook/whatsapp` |
-| PrintNode client | Boutique's PC | Runs the PrintNode desktop app; backend calls PrintNode cloud |
+| Android print bridge | Shop Android phone | Polls Render, claims `PrintJob`s, sends TSPL RAW commands to the Wi-Fi printer |
 | Postgres backups | Use Railway/Render's nightly backup add-on |
 
-`NODE_ENV=production` + `COOKIE_SECURE=true` for prod.
+For production auth, set `NODE_ENV=production`, `SESSION_COOKIE_SECURE=true`, `SESSION_COOKIE_MAX_AGE_DAYS=7`, and use `SESSION_COOKIE_SAMESITE=none` while the dashboard and API are on different site domains.
 
 Backend Docker build:
 
