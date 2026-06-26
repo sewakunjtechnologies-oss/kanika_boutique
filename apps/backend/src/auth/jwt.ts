@@ -7,7 +7,7 @@ export interface AuthPayload {
   role: 'OWNER' | 'MANAGER' | 'ADMIN' | 'STAFF';
 }
 
-const TOKEN_TTL = '7d';
+export const TOKEN_TTL = '7d';
 
 export function signAuthToken(payload: AuthPayload): string {
   return jwt.sign(payload, env.JWT_SECRET, { expiresIn: TOKEN_TTL });

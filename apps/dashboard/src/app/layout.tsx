@@ -5,6 +5,12 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Kanika Designs — Admin',
   description: 'WhatsApp order automation dashboard',
+  manifest: '/manifest.webmanifest',
+  appleWebApp: {
+    capable: true,
+    title: 'Kanika Designs',
+    statusBarStyle: 'default',
+  },
 };
 
 export default function RootLayout({

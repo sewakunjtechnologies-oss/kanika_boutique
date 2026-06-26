@@ -16,6 +16,11 @@ import {
 
 export const authRouter = Router();
 
+authRouter.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, private');
+  next();
+});
+
 const LoginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),

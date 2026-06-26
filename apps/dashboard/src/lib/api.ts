@@ -17,15 +17,27 @@ const BACKEND_URL = '';
 // can't be proxied through Vercel rewrites).
 export const BACKEND_WS_ORIGIN = (configuredBackendUrl ?? 'http://localhost:3031').replace(/\/+$/, '');
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export interface ApiRequestInit extends RequestInit {
+  redirectOnUnauthorized?: boolean;
+}
+
+async function request<T>(path: string, init?: ApiRequestInit): Promise<T> {
+  const { redirectOnUnauthorized = true, ...fetchInit } = init ?? {};
+  const headers = { 'content-type': 'application/json', ...(fetchInit.headers ?? {}) };
   const res = await fetch(`${BACKEND_URL}${path}`, {
+    ...fetchInit,
     credentials: 'include',
-    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
+    cache: fetchInit.cache ?? 'no-store',
+    headers,
   });
   if (!res.ok) {
     const body = await res.text();
-    if (res.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+    if (
+      redirectOnUnauthorized &&
+      res.status === 401 &&
+      typeof window !== 'undefined' &&
+      !window.location.pathname.startsWith('/login')
+    ) {
       const next = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
       window.location.href = `/login?next=${next}`;
     }
@@ -53,7 +65,7 @@ export function apiErrorMessage(error: unknown, fallback: string): string {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  get: <T>(path: string, init?: ApiRequestInit) => request<T>(path, init),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
   put: <T>(path: string, body?: unknown) =>
@@ -69,6 +81,7 @@ export const api = {
       method: 'POST',
       body: fd,
       credentials: 'include',
+      cache: 'no-store',
     });
     if (!res.ok) throw new ApiError(res.status, await res.text());
     return res.json();

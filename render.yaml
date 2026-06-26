@@ -68,15 +68,12 @@ services:
 
       # ---- Public URLs ----
       # PUBLIC_BACKEND_URL: this service's URL, e.g. https://kda-backend.onrender.com
-      # PUBLIC_DASHBOARD_URL: the Vercel dashboard URL (drives CORS + cookie checks).
+      # PUBLIC_DASHBOARD_URL: the Vercel dashboard URL. In production this is the
+      # only browser origin allowed by CORS; change this when moving to a custom domain.
       - key: PUBLIC_BACKEND_URL
         sync: false
       - key: PUBLIC_DASHBOARD_URL
         sync: false
-      - key: DASHBOARD_URL
-        value: https://kanika-boutique-dashboard.vercel.app
-      - key: CORS_ORIGINS
-        value: https://kanika-boutique-dashboard.vercel.app,https://dashboard.kanikaboutique.com
 
       # ---- Meta WhatsApp Cloud API ----
       - key: META_APP_ID

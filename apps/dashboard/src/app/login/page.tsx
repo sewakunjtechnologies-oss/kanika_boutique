@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { api, ApiError } from '@/lib/api';
+import type { AuthMeResponse } from '@/lib/auth-state';
 
 export default function LoginPage(): React.ReactElement {
   return (
@@ -31,7 +32,7 @@ function LoginForm(): React.ReactElement {
     setLoading(true);
     try {
       await api.post('/api/auth/login', { email, password });
-      await api.get('/api/auth/me');
+      await api.get<AuthMeResponse>('/api/auth/me', { redirectOnUnauthorized: false, cache: 'no-store' });
       router.replace(next);
       router.refresh();
     } catch (err) {

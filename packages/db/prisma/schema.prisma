@@ -500,7 +500,7 @@ model AuditLog {
 }
 
 // =============================================================================
-// Print jobs — claimed and printed by the on-site Windows print bridge.
+// Print jobs — claimed and printed by the on-site print bridge (Android TCP agent or legacy bridge).
 // A job stays non-PRINTED until the bridge confirms a successful print.
 // =============================================================================
 

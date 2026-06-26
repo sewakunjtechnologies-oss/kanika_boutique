@@ -2,46 +2,46 @@
 
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { api, ApiError } from '@/lib/api';
+import { api } from '@/lib/api';
+import { type AuthMeResponse, type AuthState, restoreAuthSession, shouldRedirectToLogin } from '@/lib/auth-state';
 
 export function AuthGuard({ children }: { children: React.ReactNode }): React.ReactElement {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [ready, setReady] = useState(false);
-  const [error, setError] = useState(false);
+  const [authState, setAuthState] = useState<AuthState>({ status: 'loading', user: null });
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .get('/api/auth/me')
-      .then(() => {
-        if (!cancelled) setReady(true);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        if (err instanceof ApiError && err.status === 401) {
-          const qs = searchParams.toString();
-          const next = encodeURIComponent(`${pathname}${qs ? `?${qs}` : ''}`);
-          router.replace(`/login?next=${next}`);
-          return;
-        }
-        setError(true);
-      });
+    setAuthState({ status: 'loading', user: null });
+    void restoreAuthSession(() =>
+      api.get<AuthMeResponse>('/api/auth/me', {
+        redirectOnUnauthorized: false,
+        cache: 'no-store',
+      }),
+    ).then((state) => {
+      if (cancelled) return;
+      setAuthState(state);
+      if (shouldRedirectToLogin(state)) {
+        const qs = searchParams.toString();
+        const next = encodeURIComponent(`${pathname}${qs ? `?${qs}` : ''}`);
+        router.replace(`/login?next=${next}`);
+      }
+    });
     return () => {
       cancelled = true;
     };
   }, [pathname, router, searchParams]);
 
-  if (error) {
+  if (authState.status === 'error') {
     return (
       <div className="text-sm text-muted-foreground">
-        Could not verify your session. Refresh the page and try again.
+        {authState.message}
       </div>
     );
   }
 
-  if (!ready) {
+  if (authState.status !== 'authenticated') {
     return <div className="text-sm text-muted-foreground">Checking session...</div>;
   }
 

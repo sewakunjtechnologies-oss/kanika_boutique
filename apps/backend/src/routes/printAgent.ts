@@ -15,6 +15,7 @@ import {
   markPrintJobFailed,
   markPrintJobPrinted,
   markPrintJobPrinting,
+  retryOldestFailedPrintJob,
 } from '../printing/printJobs';
 
 export const printAgentRouter = Router();
@@ -133,6 +134,21 @@ printAgentRouter.post('/print-agent/jobs/:id/failed', requirePrintAgentToken, as
   }
   emitToDashboard('printer_status_changed', { failedJobId: job.id, lastError: job.lastError });
   res.json({ ok: true });
+});
+
+printAgentRouter.post('/print-agent/jobs/retry-failed', requirePrintAgentToken, async (req: Request, res: Response): Promise<void> => {
+  const parsed = DeviceSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: 'invalid_input' });
+    return;
+  }
+  const job = await retryOldestFailedPrintJob(parsed.data.deviceId);
+  if (!job) {
+    res.json({ ok: true, job: null });
+    return;
+  }
+  emitToDashboard('printer_status_changed', { retriedJobId: job.id });
+  res.json({ ok: true, job: { id: job.id, status: job.status, type: job.type } });
 });
 
 printAgentRouter.post('/printer/test-label', requirePrintAgentToken, async (req: Request, res: Response): Promise<void> => {
