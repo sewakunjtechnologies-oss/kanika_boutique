@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Kanika Print Bridge</string>
+    <string name="notification_channel_name">Print bridge status</string>
+    <string name="notification_channel_description">Shows whether the Kanika Android print bridge is running.</string>
+</resources>

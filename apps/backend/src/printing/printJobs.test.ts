@@ -11,6 +11,7 @@ import {
   createManualReceiptReturnSlipJob,
   createManualReceiptSlipJob,
   markPrintJobDryRunCompleted,
+  retryOldestFailedPrintJob,
 } from './printJobs';
 
 const order = {
@@ -346,6 +347,47 @@ describe('print jobs', () => {
     expect(tx.printJob.updateMany.mock.calls[1]?.[0].where).toMatchObject({
       id: 'job_one',
       status: PrintJobStatus.PENDING,
+    });
+  });
+
+  test('retryOldestFailedPrintJob requeues one failed job', async () => {
+    const failedJob = { id: 'failed_job', status: PrintJobStatus.FAILED };
+    const tx = {
+      printJob: {
+        findFirst: vi.fn().mockResolvedValue(failedJob),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findUnique: vi.fn().mockResolvedValue({ ...failedJob, status: PrintJobStatus.PENDING }),
+      },
+    };
+    const transactionSpy = vi.spyOn(prisma, '$transaction') as unknown as {
+      mockImplementation: (impl: (callback: unknown) => Promise<unknown>) => void;
+    };
+    transactionSpy.mockImplementation(async (callback: unknown) => {
+      if (typeof callback !== 'function') return [];
+      return (callback as (client: typeof tx) => Promise<unknown>)(tx);
+    });
+
+    const result = await retryOldestFailedPrintJob('android_1');
+
+    expect(result?.status).toBe(PrintJobStatus.PENDING);
+    expect(tx.printJob.findFirst).toHaveBeenCalledWith({
+      where: {
+        status: PrintJobStatus.FAILED,
+        attempts: expect.any(Object),
+      },
+      orderBy: [{ updatedAt: 'asc' }],
+    });
+    expect(tx.printJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'failed_job',
+        status: PrintJobStatus.FAILED,
+        attempts: expect.any(Object),
+      },
+      data: expect.objectContaining({
+        status: PrintJobStatus.PENDING,
+        claimedAt: null,
+        claimedBy: null,
+      }),
     });
   });
 });
