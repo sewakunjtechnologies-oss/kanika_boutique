@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, Printer } from 'lucide-react';
+import { ImageIcon, Plus, Printer } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -17,20 +17,18 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { api, apiErrorMessage } from '@/lib/api';
+import {
+  filterReceiptProducts,
+  findDefaultVariant,
+  isSelectableReceiptProduct,
+  productAvailableSizes,
+  productDisplayName,
+  productTotalStock,
+  type ManualReceiptProduct,
+} from '@/lib/manual-receipt-products';
 import { formatCurrency, formatDate } from '@/lib/utils';
 
-interface Product {
-  id: string;
-  name: string;
-  sku: string;
-  basePrice: string;
-  variants: {
-    id: string;
-    size: string;
-    stock: number;
-    priceOverride: string | null;
-  }[];
-}
+type Product = ManualReceiptProduct;
 
 interface ReceiptSummary {
   id: string;
@@ -70,6 +68,7 @@ export default function ManualReceiptsPage(): React.ReactElement {
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [printingId, setPrintingId] = useState<string | null>(null);
+  const [productSearch, setProductSearch] = useState('');
 
   async function load(): Promise<void> {
     const [productRes, receiptRes] = await Promise.all([
@@ -90,6 +89,10 @@ export default function ManualReceiptsPage(): React.ReactElement {
   const total = Math.max(subtotal + deliveryCharge - Number(discount || 0), 0);
 
   const productById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
+  const visibleProducts = useMemo(
+    () => filterReceiptProducts(products, productSearch).slice(0, 30),
+    [products, productSearch],
+  );
 
   function updateItem(index: number, patch: Partial<DraftItem>): void {
     setItems((current) => current.map((item, i) => (i === index ? { ...item, ...patch } : item)));
@@ -97,7 +100,8 @@ export default function ManualReceiptsPage(): React.ReactElement {
 
   function selectProduct(index: number, productId: string): void {
     const product = productById.get(productId);
-    const variant = product?.variants[0];
+    if (!product || !isSelectableReceiptProduct(product)) return;
+    const variant = findDefaultVariant(product);
     updateItem(index, {
       productId,
       productVariantId: variant?.id ?? '',
@@ -188,22 +192,71 @@ export default function ManualReceiptsPage(): React.ReactElement {
           <div className="space-y-3">
             {items.map((item, index) => {
               const product = productById.get(item.productId);
+              const selectedVariant = product?.variants.find((variant) => variant.id === item.productVariantId);
               return (
-                <div key={index} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1.5fr_1fr_90px_110px]">
+                <div key={index} className="space-y-3 rounded-md border border-border p-3">
                   <Field label="Product">
-                    <select
-                      value={item.productId}
-                      onChange={(e) => selectProduct(index, e.target.value)}
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                    >
-                      <option value="">Select product</option>
-                      {products.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
+                    <Input
+                      value={productSearch}
+                      onChange={(e) => setProductSearch(e.target.value)}
+                      placeholder="Search by name, SKU, article, category, or size"
+                    />
+                    <div className="grid max-h-[360px] gap-2 overflow-y-auto pt-2 sm:grid-cols-2 xl:grid-cols-3">
+                      {visibleProducts.map((p) => {
+                        const selectable = isSelectableReceiptProduct(p);
+                        const selected = p.id === item.productId;
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            disabled={!selectable}
+                            onClick={() => selectProduct(index, p.id)}
+                            className={`grid min-h-[112px] grid-cols-[72px_1fr] gap-3 rounded-md border p-2 text-left transition ${
+                              selected
+                                ? 'border-primary bg-primary/5'
+                                : 'border-border hover:border-primary/50'
+                            } ${selectable ? '' : 'cursor-not-allowed opacity-55'}`}
+                          >
+                            <ProductThumb product={p} className="h-[88px] w-[72px]" />
+                            <span className="min-w-0 space-y-1 text-xs">
+                              <span className="block truncate text-sm font-medium">{productDisplayName(p)}</span>
+                              <span className="block truncate font-mono">SKU: {p.sku}</span>
+                              <span className="block truncate">{p.category || 'Uncategorised'}</span>
+                              <span className="block truncate">Sizes: {productAvailableSizes(p).join(', ') || '-'}</span>
+                              <span className="block">
+                                Stock: {productTotalStock(p)} · {formatCurrency(p.basePrice)}
+                              </span>
+                              {!selectable && <span className="block font-medium text-destructive">Out of stock</span>}
+                            </span>
+                          </button>
+                        );
+                      })}
+                      {visibleProducts.length === 0 && (
+                        <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                          No active products match this search.
+                        </div>
+                      )}
+                    </div>
                   </Field>
+                  {product && (
+                    <div className="grid gap-3 rounded-md bg-muted/35 p-3 sm:grid-cols-[104px_1fr]">
+                      <ProductThumb product={product} className="h-[128px] w-[104px]" />
+                      <div className="min-w-0 text-sm">
+                        <div className="truncate font-medium">{productDisplayName(product)}</div>
+                        <div className="mt-1 font-mono text-xs text-muted-foreground">SKU: {product.sku}</div>
+                        <div className="mt-1 text-muted-foreground">{product.category || 'Uncategorised'}</div>
+                        <div className="mt-2">
+                          Sizes: {productAvailableSizes(product).join(', ') || '-'} · Stock: {productTotalStock(product)}
+                        </div>
+                        {selectedVariant && (
+                          <div className="mt-1">
+                            Selected size {selectedVariant.size}: {selectedVariant.stock} in stock
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_90px_110px]">
                   <Field label="Size">
                     <select
                       value={item.productVariantId}
@@ -234,6 +287,7 @@ export default function ManualReceiptsPage(): React.ReactElement {
                       onChange={(e) => updateItem(index, { unitPrice: e.target.value })}
                     />
                   </Field>
+                  </div>
                 </div>
               );
             })}
@@ -332,6 +386,24 @@ export default function ManualReceiptsPage(): React.ReactElement {
 function calculateDeliveryCharge(quantity: number): number {
   if (!Number.isFinite(quantity) || quantity <= 0) return 0;
   return 100 + (Math.floor(quantity) - 1) * 50;
+}
+
+function ProductThumb({ product, className }: { product: Product; className: string }): React.ReactElement {
+  if (!product.imageUrl) {
+    return (
+      <span className={`${className} flex items-center justify-center rounded-md bg-muted text-muted-foreground`}>
+        <ImageIcon size={22} />
+      </span>
+    );
+  }
+  return (
+    <img
+      src={product.imageUrl}
+      alt={productDisplayName(product)}
+      className={`${className} rounded-md object-cover`}
+      loading="lazy"
+    />
+  );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }): React.ReactElement {

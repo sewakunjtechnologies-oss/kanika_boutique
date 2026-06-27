@@ -8,7 +8,7 @@ import {
 } from '../ai/intentClassifier';
 import { matchProduct, type ProductMatchCandidate, type ProductMatchOutcome } from '../ai/productMatcher';
 import { extractPayment } from '../ai/paymentExtractor';
-import { downloadMedia, sendInteractiveButtons, sendInteractiveList, sendText } from '../whatsapp/client';
+import { downloadMedia, sendImage, sendInteractiveButtons, sendInteractiveList, sendText } from '../whatsapp/client';
 import { notifyAdminsPaymentPending, shouldSendAdminNotification } from '../whatsapp/adminNotifications';
 import { isTakeoverActive } from '../whatsapp/conversations';
 import { storage } from '../storage';
@@ -19,7 +19,6 @@ import {
   isProductChangeIntent,
   PRODUCT_REJECTED_MESSAGE,
   PRODUCT_FIRST_MESSAGE,
-  CHECKING_PRODUCT_MESSAGE,
   transition,
   type Action,
   type ChatEvent,
@@ -50,12 +49,12 @@ import {
   classifyPausedDecision,
   hasReusablePendingRestart,
   RESUME_CONFIRMATION_MESSAGE,
-  UNMATCHED_IMAGE_REPLY,
 } from './pausedResume';
 import { handleSupportReply } from './supportNudge';
 
 const HUMAN_TAKEOVER_MS = 6 * 60 * 60 * 1000;
 const NEW_PRODUCT_AFTER_CANCEL_MESSAGE = 'Sure. Please send the new product photo or article number.';
+const PRODUCT_MATCH_CONFIRMATION_TIMEOUT_MS = 30 * 60 * 1000;
 
 interface OrchestratorInput {
   conversationId: string;
@@ -353,6 +352,7 @@ function shouldStateMachineHandleControlText(
 function isProductChangeFlowState(state: ConversationState): boolean {
   return ([
     ConversationState.AWAITING_PRODUCT_CONFIRMATION,
+    ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION,
     ConversationState.AWAITING_SIZE,
     ConversationState.AWAITING_QTY,
     ConversationState.AWAITING_NAME,
@@ -365,6 +365,7 @@ function isProductChangeFlowState(state: ConversationState): boolean {
 function isAmbiguousCancelFlowState(state: ConversationState): boolean {
   return ([
     ConversationState.AWAITING_PRODUCT_CONFIRMATION,
+    ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION,
     ConversationState.AWAITING_NEW_PRODUCT,
     ConversationState.AWAITING_SIZE,
     ConversationState.AWAITING_QTY,
@@ -771,8 +772,8 @@ async function resolveTakeoverForTrigger(
 
   if (event.type === 'IMAGE') {
     // Release takeover first so any availability reply is not suppressed by the
-    // takeover send-guard. The photo is still processed silently — we only
-    // reply on a high-confidence inventory match.
+    // takeover send-guard. The photo is acknowledged, then either auto-matched,
+    // sent for customer confirmation, or given a clearer-photo fallback.
     await prisma.conversation.update({
       where: { id: conv.id },
       data: {
@@ -1233,9 +1234,26 @@ async function handleProductConfirmationInput(
   conv: Conversation,
   event: ChatEvent,
 ): Promise<boolean> {
-  if (conv.state !== ConversationState.AWAITING_PRODUCT_CONFIRMATION) return false;
+  if (
+    conv.state !== ConversationState.AWAITING_PRODUCT_CONFIRMATION &&
+    conv.state !== ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION
+  ) {
+    return false;
+  }
 
   const ctx = (conv.contextJson as OrderContext) ?? {};
+  if (conv.state === ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION && isExpiredCandidateContext(ctx)) {
+    await prisma.conversation.update({
+      where: { id: input.conversationId },
+      data: {
+        state: ConversationState.AWAITING_NEW_PRODUCT,
+        contextJson: rejectedProductContext({ ...ctx, productId: ctx.candidateProductId ?? ctx.productId }) as never,
+      },
+    });
+    await sendText(input.customerWhatsappNumber, 'This product confirmation expired. Please send the product photo or article number again.');
+    return true;
+  }
+
   const text =
     event.type === 'TEXT'
       ? event.body.trim()
@@ -1243,36 +1261,60 @@ async function handleProductConfirmationInput(
         ? event.title
         : '';
 
-  if ((event.type === 'BUTTON_REPLY' || event.type === 'LIST_REPLY') && event.id.startsWith('match_')) {
-    await beginOrderFromProduct(input, event.id.slice('match_'.length), extractRequestedSize(text), ctx);
+  if (
+    (event.type === 'BUTTON_REPLY' || event.type === 'LIST_REPLY') &&
+    (event.id.startsWith('match_') || event.id.startsWith('product_') || event.id.startsWith('alt_'))
+  ) {
+    const productId = event.id.replace(/^(match_|product_|alt_)/, '');
+    await beginOrderFromProduct(input, productId, extractRequestedSize(text), ctx);
     return true;
   }
 
   if ((event.type === 'BUTTON_REPLY' || event.type === 'LIST_REPLY') && event.id === 'product_confirm_yes') {
-    if (!ctx.productId) {
-      await requestClearerProductReference(input);
+    const productId = conv.state === ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION
+      ? ctx.candidateProductId
+      : ctx.productId;
+    if (!productId) {
+      await sendText(input.customerWhatsappNumber, PRODUCT_FIRST_MESSAGE);
       return true;
     }
-    await beginOrderFromProduct(input, ctx.productId, ctx.requestedSize ?? extractRequestedSize(text), ctx);
+    await beginOrderFromProduct(input, productId, ctx.requestedSize ?? extractRequestedSize(text), {
+      ...ctx,
+      productId,
+    });
     return true;
   }
 
   if ((event.type === 'BUTTON_REPLY' || event.type === 'LIST_REPLY') && event.id === 'product_confirm_no') {
-    await askForNewProductAfterRejection(input, ctx);
+    if (conv.state === ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION) {
+      await rejectCandidateProductMatch(input, ctx);
+    } else {
+      await askForNewProductAfterRejection(input, ctx);
+    }
     return true;
   }
 
   if (event.type === 'TEXT') {
     if (/^(yes|y|haan|han|ha|ok|okay|correct|same|this|yeh|ye)$/i.test(text)) {
-      if (!ctx.productId) {
-        await requestClearerProductReference(input);
+      const productId = conv.state === ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION
+        ? ctx.candidateProductId
+        : ctx.productId;
+      if (!productId) {
+        await sendText(input.customerWhatsappNumber, PRODUCT_FIRST_MESSAGE);
         return true;
       }
-      await beginOrderFromProduct(input, ctx.productId, ctx.requestedSize ?? extractRequestedSize(text), ctx);
+      await beginOrderFromProduct(input, productId, ctx.requestedSize ?? extractRequestedSize(text), {
+        ...ctx,
+        productId,
+      });
       return true;
     }
     if (/^(no|n|nahi|nahin|wrong|not this|dusra|alag)$/i.test(text)) {
-      await askForNewProductAfterRejection(input, ctx);
+      if (conv.state === ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION) {
+        await rejectCandidateProductMatch(input, ctx);
+      } else {
+        await askForNewProductAfterRejection(input, ctx);
+      }
       return true;
     }
 
@@ -1351,6 +1393,62 @@ async function askForNewProductAfterRejection(
     },
   });
   await sendText(input.customerWhatsappNumber, PRODUCT_REJECTED_MESSAGE);
+}
+
+async function rejectCandidateProductMatch(input: OrchestratorInput, ctx: OrderContext): Promise<void> {
+  const rejectedId = ctx.candidateProductId ?? ctx.productId;
+  const remainingCandidates = (ctx.candidateProductIds ?? []).filter((id) => id !== rejectedId).slice(0, 3);
+  const rejectedContext = rejectedProductContext({
+    ...ctx,
+    productId: rejectedId ?? ctx.productId,
+  });
+
+  await prisma.conversation.update({
+    where: { id: input.conversationId },
+    data: {
+      state: ConversationState.AWAITING_NEW_PRODUCT,
+      contextJson: compactOrderContext({
+        ...rejectedContext,
+        candidateProductId: undefined,
+        candidateProductName: undefined,
+        candidateProductSku: undefined,
+        candidateImageUrl: undefined,
+        candidateTopScore: undefined,
+        candidateSecondScore: undefined,
+        candidateScoreMargin: undefined,
+        candidateCreatedAt: undefined,
+        candidateProductIds: remainingCandidates,
+      }) as never,
+    },
+  });
+
+  if (remainingCandidates.length > 0) {
+    await sendInteractiveList(
+      input.customerWhatsappNumber,
+      "No problem. I won't continue with that product. These are the next closest matches. Pick one only if it is correct:",
+      'View matches',
+      [
+        {
+          title: 'Closest matches',
+          rows: remainingCandidates.map((productId, index) => ({
+            id: `match_${productId}`,
+            title: `Option ${index + 1}`,
+            description: 'Tap only if this is your product',
+          })),
+        },
+      ],
+    );
+    return;
+  }
+
+  await sendText(input.customerWhatsappNumber, PRODUCT_REJECTED_MESSAGE);
+}
+
+function isExpiredCandidateContext(ctx: OrderContext): boolean {
+  if (!ctx.candidateCreatedAt) return false;
+  const createdAt = Date.parse(ctx.candidateCreatedAt);
+  if (!Number.isFinite(createdAt)) return true;
+  return Date.now() - createdAt > PRODUCT_MATCH_CONFIRMATION_TIMEOUT_MS;
 }
 
 /**
@@ -1558,33 +1656,27 @@ async function respondToProductMatchOutcome(
   requestedSize: string | null,
   sourceMediaId: string | null = null,
 ): Promise<void> {
-  const threshold = env.IMAGE_MATCH_MIN_CONFIDENCE;
-  const requiredMargin = env.IMAGE_MATCH_SECOND_BEST_MIN_MARGIN;
+  const threshold = env.IMAGE_AUTO_MATCH_THRESHOLD;
+  const candidateThreshold = env.IMAGE_CANDIDATE_MATCH_THRESHOLD;
+  const requiredMargin = env.IMAGE_MIN_SCORE_MARGIN;
   const score = outcome?.confidence ?? 0;
   const matchedProductId = outcome?.matchedProductId ?? null;
   const bestSecondMargin = outcome?.bestSecondMargin ?? null;
   const hasClearBestMatch = bestSecondMargin === null || bestSecondMargin >= requiredMargin;
-  logger.info(
-    {
-      conversationId: input.conversationId,
-      score,
-      threshold,
-      bestSecondMargin,
-      requiredMargin,
-      band: outcome?.confidenceBand ?? 'none',
-      matchedProductId,
-    },
-    'inventory match score',
-  );
 
-  // Accept ONLY a confident single match. Higher score = better match; anything
-  // below the configured threshold or too close to the second-best candidate is
-  // treated as no match.
-  if (matchedProductId && outcome?.meetsThreshold && score >= threshold && hasClearBestMatch) {
-    logger.info(
-      { conversationId: input.conversationId, productId: matchedProductId, score },
-      'inventory match accepted',
-    );
+  // Approved policy: reply ONLY on a confident, unambiguous single match:
+  //   topScore >= IMAGE_AUTO_MATCH_THRESHOLD
+  //   AND (single valid candidate OR topScore - secondScore >= IMAGE_MIN_SCORE_MARGIN)
+  // Everything else (low confidence, ambiguous margin, or no match) is fully
+  // silent: no WhatsApp reply, no order, no conversation step, no stock change.
+  if (
+    matchedProductId &&
+    outcome?.decision === 'auto_match' &&
+    outcome.meetsThreshold &&
+    score >= threshold &&
+    hasClearBestMatch
+  ) {
+    logImageMatchDecision(input, outcome, 'MATCHED', 'confident_unambiguous_match');
     await beginOrderFromProduct(
       input,
       matchedProductId,
@@ -1594,47 +1686,21 @@ async function respondToProductMatchOutcome(
     return;
   }
 
-  // Below threshold / no match: never guess and never create an order. Reply to
-  // the customer so the bot does not appear dead, and surface the issue for the
-  // dashboard.
-  logger.info(
-    { conversationId: input.conversationId, score, threshold, reason: outcome?.reasoning ?? 'matcher_failed' },
-    'inventory match rejected',
-  );
-  logger.info(
-    { conversationId: input.conversationId, senderLast4: last4(input.customerWhatsappNumber), score },
-    'image ignored: no inventory match',
-  );
+  const reason =
+    score < candidateThreshold
+      ? 'below_candidate_threshold'
+      : score < threshold
+        ? 'below_auto_threshold'
+        : !hasClearBestMatch
+          ? 'ambiguous_margin'
+          : 'no_confident_match';
+  logImageMatchDecision(input, outcome, 'SILENT_NO_MATCH', reason);
   emitToDashboard('image_unmatched', {
     conversationId: input.conversationId,
     score,
     hasCandidate: Boolean(matchedProductId),
   });
-
-  await requestClearerProductReference(input, outcome?.candidates ?? []);
-}
-
-async function requestClearerProductReference(
-  input: OrchestratorInput,
-  candidates: ProductMatchCandidate[] = [],
-): Promise<void> {
-  await prisma.conversation.update({
-    where: { id: input.conversationId },
-    data: { state: ConversationState.IDLE, contextJson: {} },
-  });
-  await sendText(input.customerWhatsappNumber, UNMATCHED_IMAGE_REPLY);
-  const top = candidates.slice(0, 3);
-  if (top.length === 0) return;
-  await sendInteractiveList(input.customerWhatsappNumber, 'These are the closest catalog photos I found. Pick one only if it is correct:', 'View matches', [
-    {
-      title: 'Closest matches',
-      rows: top.map((candidate) => ({
-        id: `product_${candidate.productId}`,
-        title: candidate.name.slice(0, 24),
-        description: `${candidate.sku} | ${Math.round(candidate.confidence * 100)}% match`,
-      })),
-    },
-  ]);
+  // Intentionally send nothing. Silent no-match is the approved business rule.
 }
 
 async function beginOrderFromProduct(
@@ -1818,7 +1884,14 @@ async function repeatCurrentPrompt(
 ): Promise<void> {
   switch (state) {
     case ConversationState.AWAITING_PRODUCT_CONFIRMATION:
-      await sendText(to, 'Please wait while I check the product photo.');
+      // No acknowledgement is sent for product photos under the silent-match
+      // policy; stay quiet rather than implying a check is in progress.
+      return;
+    case ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION:
+      await sendInteractiveButtons(to, 'Please confirm if the likely match is the same product.', [
+        { id: 'product_confirm_yes', title: 'Yes' },
+        { id: 'product_confirm_no', title: 'No' },
+      ]);
       return;
     case ConversationState.AWAITING_NEW_PRODUCT:
       await sendText(to, PRODUCT_FIRST_MESSAGE);
@@ -1948,6 +2021,13 @@ function sameSize(a: string, b: string): boolean {
   return a.trim().toUpperCase() === b.trim().toUpperCase();
 }
 
+function toPublicImageLink(imageUrl: string | null | undefined): string | null {
+  if (!imageUrl) return null;
+  if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) return imageUrl;
+  if (imageUrl.startsWith('/')) return `${env.PUBLIC_BACKEND_URL.replace(/\/+$/, '')}${imageUrl}`;
+  return null;
+}
+
 /**
  * True when inventory has at least one active, in-stock product with a
  * searchable image. If false, a customer photo can never match anything, so we
@@ -1966,26 +2046,50 @@ async function hasSearchableInventoryImages(): Promise<boolean> {
 
 /**
  * Unified entry for an inbound customer product photo. Acknowledges the photo,
- * guards on real dashboard inventory, downloads + matches, and never proceeds
- * unless the match is high-confidence and unambiguous. Never throws — the
- * webhook has already returned 200.
+ * guards on real dashboard inventory, downloads + matches, and never creates
+ * an order unless the product is auto-matched or explicitly confirmed by the
+ * customer. Never throws — the webhook has already returned 200.
  */
 async function processInboundProductImage(
   input: OrchestratorInput,
   mediaId: string,
   requestedSize: string | null,
 ): Promise<void> {
-  await sendText(input.customerWhatsappNumber, CHECKING_PRODUCT_MESSAGE);
+  // Never send any acknowledgement before matching completes. A photo produces
+  // at most one customer-facing reply, and only on a confident match.
   if (!(await hasSearchableInventoryImages())) {
-    logger.info(
-      { conversationId: input.conversationId, senderLast4: last4(input.customerWhatsappNumber) },
-      'image ignored: inventory image index empty',
-    );
-    await requestClearerProductReference(input);
+    logImageMatchDecision(input, null, 'SILENT_NO_MATCH', 'inventory_index_empty');
     return;
   }
   const outcome = await runProductMatchOutcome(mediaId);
   await respondToProductMatchOutcome(input, outcome, requestedSize, mediaId);
+}
+
+/**
+ * Safe, token-free diagnostic log for every inbound product image. Never logs
+ * access tokens or signed media URLs.
+ */
+function logImageMatchDecision(
+  input: OrchestratorInput,
+  outcome: ProductMatchOutcome | null,
+  decision: 'MATCHED' | 'SILENT_NO_MATCH',
+  reason: string,
+): void {
+  const candidates = outcome?.candidates ?? [];
+  logger.info(
+    {
+      whatsappMessageId: input.message.id,
+      conversationId: input.conversationId,
+      candidateCount: candidates.length,
+      bestProductId: outcome?.matchedProductId ?? candidates[0]?.productId ?? null,
+      topScore: outcome?.confidence ?? 0,
+      secondScore: candidates[1]?.confidence ?? null,
+      scoreMargin: outcome?.bestSecondMargin ?? null,
+      matchDecision: decision,
+      reason,
+    },
+    'image match decision',
+  );
 }
 
 async function runProductMatchOutcome(mediaId: string): Promise<ProductMatchOutcome | null> {
@@ -2005,6 +2109,7 @@ async function runProductMatchOutcome(mediaId: string): Promise<ProductMatchOutc
         matchedProductId: outcome.matchedProductId ?? null,
         confidence: outcome.confidence,
         confidenceBand: outcome.confidenceBand,
+        decision: outcome.decision,
       },
       outcome.matchedProductId ? 'product match found' : 'product match not found',
     );

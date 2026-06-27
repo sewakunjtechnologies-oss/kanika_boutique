@@ -3,9 +3,6 @@ import type { ChatEvent, OrderContext } from './stateMachine';
 export const RESUME_CONFIRMATION_MESSAGE =
   'Your previous order was cancelled. Do you want to start a fresh order for this product? Reply YES to continue or TEAM to talk to the boutique team.';
 
-export const UNMATCHED_IMAGE_REPLY =
-  "I couldn't confidently match this photo to our catalog. Please send a clearer full product photo or share the product/article number.";
-
 export type PausedDecision = 'ignore' | 'attention' | 'ask_resume' | 'resume_yes' | 'team';
 
 export function classifyPausedDecision(event: ChatEvent, context: OrderContext): PausedDecision {

@@ -132,8 +132,16 @@ export default function OrderDetailPage(): React.ReactElement {
   async function approve(): Promise<void> {
     setBusy(true);
     try {
-      await api.post(`/api/orders/${order!.id}/approve-payment`);
-      toast.success('Approved — customer notified');
+      const result = await api.post<{ printJobId?: string | null }>(
+        `/api/orders/${order!.id}/approve-payment`,
+      );
+      // The label is queued as a PrintJob; the Android bridge prints it without
+      // any further click. Do not claim "Printed" until the bridge reports back.
+      toast.success(
+        result?.printJobId
+          ? 'Payment approved. Print job queued.'
+          : 'Payment approved — customer notified',
+      );
       await reload();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {

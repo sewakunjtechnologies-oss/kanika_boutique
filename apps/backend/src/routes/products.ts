@@ -7,6 +7,7 @@ import { getStockMovementsForVariant, recordStockMovement } from '../chatbot/ord
 import { env } from '../config/env';
 import { deleteImage } from '../storage/cloudinary';
 import { logger } from '../logger';
+import { matchProduct } from '../ai/productMatcher';
 
 export const productsRouter = Router();
 
@@ -38,6 +39,10 @@ const CreateProductSchema = z.object({
 });
 
 const UpdateProductSchema = CreateProductSchema.partial().omit({ variants: true });
+const ImageMatchDiagnoseSchema = z.object({
+  imageBase64: z.string().min(1),
+  imageMediaType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/gif']).optional(),
+});
 
 productsRouter.use(requireAuth);
 
@@ -73,6 +78,36 @@ productsRouter.get('/products', async (req: Request, res: Response): Promise<voi
         priceOverride: v.priceOverride?.toString() ?? null,
       })),
       totalStock: p.variants.reduce((s, v) => s + v.stock, 0),
+    })),
+  });
+});
+
+productsRouter.post('/products/image-match/diagnose', requireOwner, async (req: Request, res: Response): Promise<void> => {
+  const parsed = ImageMatchDiagnoseSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'invalid_input', fields: parsed.error.flatten().fieldErrors });
+    return;
+  }
+
+  const outcome = await matchProduct(parsed.data);
+  const secondScore = outcome.candidates.find((candidate) => candidate.productId !== outcome.matchedProductId)?.confidence ?? null;
+  res.json({
+    decision: outcome.decision,
+    topScore: outcome.confidence,
+    secondScore,
+    scoreMargin: outcome.bestSecondMargin,
+    thresholds: {
+      auto: env.IMAGE_AUTO_MATCH_THRESHOLD,
+      candidate: env.IMAGE_CANDIDATE_MATCH_THRESHOLD,
+      margin: env.IMAGE_MIN_SCORE_MARGIN,
+    },
+    candidates: outcome.candidates.slice(0, 5).map((candidate) => ({
+      productId: candidate.productId,
+      sku: candidate.sku,
+      name: candidate.name,
+      thumbnail: candidate.imageUrl,
+      similarityScore: candidate.confidence,
+      scoreMargin: Math.max(candidate.confidence - (secondScore ?? 0), 0),
     })),
   });
 });

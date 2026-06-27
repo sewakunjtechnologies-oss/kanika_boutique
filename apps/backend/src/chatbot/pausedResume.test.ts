@@ -3,7 +3,6 @@ import {
   classifyPausedDecision,
   hasReusablePendingRestart,
   RESUME_CONFIRMATION_MESSAGE,
-  UNMATCHED_IMAGE_REPLY,
 } from './pausedResume';
 
 describe('paused resume handling', () => {
@@ -60,11 +59,6 @@ describe('paused resume handling', () => {
     expect(
       classifyPausedDecision({ type: 'TEXT', body: '??' }, { botPausedReason: 'customer_cancelled' }),
     ).toBe('attention');
-  });
-
-  test('unmatched image fallback is customer-facing', () => {
-    expect(UNMATCHED_IMAGE_REPLY).toContain('clearer');
-    expect(UNMATCHED_IMAGE_REPLY).toContain('article');
   });
 
   test('after product-change, old image pending restart is not reusable', () => {

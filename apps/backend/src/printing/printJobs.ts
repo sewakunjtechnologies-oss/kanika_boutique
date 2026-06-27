@@ -7,6 +7,7 @@ import {
 } from '@kda/db';
 import {
   autoOrderLabelIdempotencyKey,
+  reprintOrderLabelIdempotencyKey,
   maskPhone,
   parseLabelPayload,
   parseManualReceiptReturnSlipPayload,
@@ -21,6 +22,7 @@ type Tx = Prisma.TransactionClient;
 interface OrderForLabel {
   id: string;
   orderNumber: string;
+  createdAt: Date;
   shippingName: string;
   shippingAddress: string;
   shippingCity: string;
@@ -118,16 +120,16 @@ export async function createAutomaticOrderLabelJob(tx: Tx, orderId: string): Pro
   if (!order) throw new Error(`order ${orderId} not found`);
   if (order.status !== OrderStatus.VERIFIED && order.status !== OrderStatus.PRINTED) return null;
 
-  const paymentId = paymentIdentifier(order);
+  const idempotencyKey = autoOrderLabelIdempotencyKey(order.id);
   const payload = buildOrderLabelPayload(order);
   return tx.printJob.upsert({
-    where: { idempotencyKey: autoOrderLabelIdempotencyKey(order.id, paymentId) },
+    where: { idempotencyKey },
     create: {
       orderId: order.id,
       type: PrintJobType.ORDER_LABEL,
       status: PrintJobStatus.PENDING,
       payload: payload as never,
-      idempotencyKey: autoOrderLabelIdempotencyKey(order.id, paymentId),
+      idempotencyKey,
     },
     update: {},
   });
@@ -153,7 +155,9 @@ export async function createManualOrderLabelJob(orderId: string, requestedBy: st
       type: PrintJobType.ORDER_LABEL,
       status: PrintJobStatus.PENDING,
       payload: payload as never,
-      idempotencyKey: `MANUAL_ORDER_LABEL:${order.id}:${requestedBy}:${Date.now()}`,
+      // Intentional reprint — always a fresh, unique job, separate from the
+      // automatic PAYMENT_APPROVED:INITIAL label.
+      idempotencyKey: reprintOrderLabelIdempotencyKey(order.id, `${requestedBy}:${randomUUID()}`),
     },
   });
 }
@@ -163,6 +167,7 @@ export async function createTestLabelJob(requestedBy = 'print-agent'): Promise<P
     templateVersion: 'test-label-v1',
     storeName: env.BUSINESS_NAME,
     orderId: 'KD-TEST-1001',
+    createdAt: new Date().toISOString(),
     customerName: 'Priya Sharma',
     maskedPhone: '98XXXXXX21',
     phoneMasked: '98XXXXXX21',
@@ -574,6 +579,7 @@ export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
     templateVersion: 'online-order-label-v1',
     storeName: env.BUSINESS_NAME,
     orderId: order.orderNumber,
+    createdAt: order.createdAt.toISOString(),
     customerName: order.shippingName,
     maskedPhone: phoneMasked,
     phoneMasked,
@@ -666,10 +672,6 @@ function splitShippingAddress(value: string): { addressLine1: string; addressLin
     addressLine1: parts[0] ?? '',
     addressLine2: parts.slice(1).join(', '),
   };
-}
-
-function paymentIdentifier(order: Pick<OrderForLabel, 'id' | 'paymentExtractedUtr' | 'paymentScreenshotUrl'>): string {
-  return order.paymentExtractedUtr || order.paymentScreenshotUrl || order.id;
 }
 
 function moneyNumber(value: { toString(): string }): number {

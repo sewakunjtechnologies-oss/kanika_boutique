@@ -1,5 +1,8 @@
 import sharp from 'sharp';
 
+const HASH_BACKGROUND = { r: 255, g: 255, b: 255, alpha: 1 };
+const MIN_USABLE_DIMENSION_PX = 24;
+
 export interface ImageFingerprint {
   averageHash: bigint;
   differenceHash: bigint;
@@ -25,27 +28,37 @@ export interface ImageMatchScore {
   colorSimilarity: number;
 }
 
-export const PERCEPTUAL_MATCH_THRESHOLD = 0.9;
+export interface ImageDiagnostics {
+  width: number | null;
+  height: number | null;
+  format: string | null;
+  sizeBytes: number;
+  isUsable: boolean;
+  reason?: string;
+}
+
+export const PERCEPTUAL_MATCH_THRESHOLD = 0.65;
 
 export async function fingerprintImage(buffer: Buffer): Promise<ImageFingerprint> {
-  const averagePixels = await sharp(buffer, { failOn: 'none' })
-    .rotate()
-    .resize(8, 8, { fit: 'fill' })
+  const diagnostics = await inspectImageBuffer(buffer);
+  if (!diagnostics.isUsable) {
+    throw new Error(`Image is not usable for matching: ${diagnostics.reason ?? 'unknown'}`);
+  }
+
+  const averagePixels = await normalizedSharp(buffer)
+    .resize(8, 8, { fit: 'contain', background: HASH_BACKGROUND, kernel: 'lanczos3' })
     .greyscale()
     .raw()
     .toBuffer();
 
-  const differencePixels = await sharp(buffer, { failOn: 'none' })
-    .rotate()
-    .resize(9, 8, { fit: 'fill' })
+  const differencePixels = await normalizedSharp(buffer)
+    .resize(9, 8, { fit: 'contain', background: HASH_BACKGROUND, kernel: 'lanczos3' })
     .greyscale()
     .raw()
     .toBuffer();
 
-  const colorPixels = await sharp(buffer, { failOn: 'none' })
-    .rotate()
-    .resize(32, 32, { fit: 'cover' })
-    .removeAlpha()
+  const colorPixels = await normalizedSharp(buffer)
+    .resize(32, 32, { fit: 'contain', background: HASH_BACKGROUND, kernel: 'lanczos3' })
     .raw()
     .toBuffer();
 
@@ -54,6 +67,33 @@ export async function fingerprintImage(buffer: Buffer): Promise<ImageFingerprint
     differenceHash: differenceHash(differencePixels),
     histogram: colorHistogram(colorPixels),
   };
+}
+
+export async function inspectImageBuffer(buffer: Buffer): Promise<ImageDiagnostics> {
+  try {
+    const image = normalizedSharp(buffer);
+    const metadata = await image.metadata();
+    const width = metadata.width ?? null;
+    const height = metadata.height ?? null;
+    if (!width || !height) {
+      return { width, height, format: metadata.format ?? null, sizeBytes: buffer.length, isUsable: false, reason: 'missing_dimensions' };
+    }
+    if (width < MIN_USABLE_DIMENSION_PX || height < MIN_USABLE_DIMENSION_PX) {
+      return { width, height, format: metadata.format ?? null, sizeBytes: buffer.length, isUsable: false, reason: 'too_small' };
+    }
+
+    const stats = await normalizedSharp(buffer).resize(32, 32, { fit: 'contain', background: HASH_BACKGROUND }).stats();
+    const meanStdev =
+      stats.channels.slice(0, 3).reduce((sum, channel) => sum + (channel.stdev ?? 0), 0) /
+      Math.max(stats.channels.slice(0, 3).length, 1);
+    if (meanStdev < 1) {
+      return { width, height, format: metadata.format ?? null, sizeBytes: buffer.length, isUsable: false, reason: 'blank_image' };
+    }
+
+    return { width, height, format: metadata.format ?? null, sizeBytes: buffer.length, isUsable: true };
+  } catch {
+    return { width: null, height: null, format: null, sizeBytes: buffer.length, isUsable: false, reason: 'decode_failed' };
+  }
 }
 
 export async function rankImageMatches(
@@ -89,7 +129,27 @@ export async function rankImageMatches(
     }
   }
 
-  return scores.sort((a, b) => b.confidence - a.confidence);
+  return distinctBestProductScores(scores);
+}
+
+function normalizedSharp(buffer: Buffer): sharp.Sharp {
+  // Keep the full garment visible: normalize EXIF orientation, flatten alpha to white,
+  // convert to RGB, and use contain-padding in downstream resizes instead of stretch/crop.
+  return sharp(buffer, { failOn: 'none' })
+    .rotate()
+    .flatten({ background: HASH_BACKGROUND })
+    .toColourspace('srgb');
+}
+
+function distinctBestProductScores(scores: ImageMatchScore[]): ImageMatchScore[] {
+  const bestByProduct = new Map<string, ImageMatchScore>();
+  for (const score of scores) {
+    const existing = bestByProduct.get(score.productId);
+    if (!existing || score.confidence > existing.confidence) {
+      bestByProduct.set(score.productId, score);
+    }
+  }
+  return [...bestByProduct.values()].sort((a, b) => b.confidence - a.confidence);
 }
 
 function averageHash(pixels: Buffer): bigint {

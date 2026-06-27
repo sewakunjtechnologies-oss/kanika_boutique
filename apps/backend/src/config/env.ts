@@ -57,12 +57,16 @@ const envSchema = z.object({
   // Chatbot behavior.
   CHATBOT_DEBUG: envBool.default(false),
   CHATBOT_ENABLE_AI_IMAGE_MATCHING: envBool.default(false),
-  // Minimum inventory image-match confidence (0..1, higher = better match)
-  // required before the bot proceeds with a customer's product photo.
-  IMAGE_MATCH_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.9),
-  // Minimum gap between best and second-best image candidates. This prevents a
-  // close-but-ambiguous match from being treated as a real inventory product.
-  IMAGE_MATCH_SECOND_BEST_MIN_MARGIN: z.coerce.number().min(0).max(1).default(0.04),
+  // Product-photo matching policy. Higher score = better visual match.
+  // Auto-match replies to the customer only when score and runner-up margin are both strong.
+  IMAGE_AUTO_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
+  // Below the auto threshold the bot stays silent. Retained for matcher banding/diagnostics.
+  IMAGE_CANDIDATE_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.45),
+  // Minimum gap between best and second-best distinct products for automatic acceptance.
+  IMAGE_MIN_SCORE_MARGIN: z.coerce.number().min(0).max(1).default(0.05),
+  // Deprecated aliases retained so older deployments do not fail env parsing.
+  IMAGE_MATCH_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).optional(),
+  IMAGE_MATCH_SECOND_BEST_MIN_MARGIN: z.coerce.number().min(0).max(1).optional(),
   // Kept for backward-compatible env parsing. Production policy is now to send
   // a customer-facing fallback for unmatched/low-confidence photos.
   REPLY_ON_UNMATCHED_IMAGE: envBool.default(true),
@@ -146,6 +150,8 @@ if (!parsed.success) {
 
 const envData = parsed.data;
 envData.AUTO_PRINT_ORDER_LABELS ??= envData.AUTO_PRINT_ON_PAYMENT_APPROVAL;
+envData.IMAGE_MATCH_MIN_CONFIDENCE ??= envData.IMAGE_AUTO_MATCH_THRESHOLD;
+envData.IMAGE_MATCH_SECOND_BEST_MIN_MARGIN ??= envData.IMAGE_MIN_SCORE_MARGIN;
 envData.SESSION_COOKIE_SECURE ??= envData.NODE_ENV === 'production';
 envData.SESSION_COOKIE_SAMESITE ??= areSameSiteUrls(envData.PUBLIC_BACKEND_URL, envData.PUBLIC_DASHBOARD_URL)
   ? 'lax'

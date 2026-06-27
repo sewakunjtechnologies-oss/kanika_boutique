@@ -30,6 +30,14 @@ export interface OrderContext {
   productPrice?: number;
   requestedSize?: string;
   matchConfidence?: number;
+  candidateProductId?: string;
+  candidateProductName?: string;
+  candidateProductSku?: string;
+  candidateImageUrl?: string;
+  candidateTopScore?: number;
+  candidateSecondScore?: number;
+  candidateScoreMargin?: number;
+  candidateCreatedAt?: string;
   candidateProductIds?: string[];
   lastMatchedImageMediaId?: string;
   productRejected?: boolean;
@@ -161,8 +169,6 @@ export const CANCEL_OR_CHANGE_MESSAGE =
 export const PRODUCT_FIRST_MESSAGE =
   "Please send the product photo or article number first, then I'll check availability.";
 
-export const CHECKING_PRODUCT_MESSAGE = 'Let me check this product for you.';
-
 export function isProductChangeIntent(text: string): boolean {
   const t = normalizeIntentText(text);
   return /\b(change product|change the product|different product|another product|something else|not this|wrong product|no this is not|change item|new product|want to change the product)\b/.test(t);
@@ -265,6 +271,9 @@ export function transition(
     case ConversationState.AWAITING_PRODUCT_CONFIRMATION:
       return handleProductConfirmation(event, context);
 
+    case ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION:
+      return handleProductMatchConfirmation(event, context);
+
     case ConversationState.AWAITING_NEW_PRODUCT:
       return handleAwaitingNewProduct(event, context);
 
@@ -308,6 +317,7 @@ export function transition(
 function isProductChangeState(state: ConversationState): boolean {
   return ([
     ConversationState.AWAITING_PRODUCT_CONFIRMATION,
+    ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION,
     ConversationState.AWAITING_SIZE,
     ConversationState.AWAITING_QTY,
     ConversationState.AWAITING_NAME,
@@ -320,6 +330,7 @@ function isProductChangeState(state: ConversationState): boolean {
 function isAmbiguousCancelState(state: ConversationState): boolean {
   return ([
     ConversationState.AWAITING_PRODUCT_CONFIRMATION,
+    ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION,
     ConversationState.AWAITING_NEW_PRODUCT,
     ConversationState.AWAITING_SIZE,
     ConversationState.AWAITING_QTY,
@@ -524,6 +535,55 @@ function handleProductConfirmation(event: ChatEvent, context: OrderContext): Tra
       {
         type: 'SEND_TEXT',
         body: 'Still looking up your photo — please wait a moment.',
+      },
+    ],
+  };
+}
+
+function handleProductMatchConfirmation(event: ChatEvent, context: OrderContext): TransitionResult {
+  if (event.type === 'TEXT' && isProductRejectionText(event.body)) {
+    return {
+      nextState: ConversationState.AWAITING_NEW_PRODUCT,
+      context: rejectProductContext({
+        ...context,
+        productId: context.candidateProductId ?? context.productId,
+      }),
+      actions: [{ type: 'SEND_TEXT', body: PRODUCT_REJECTED_MESSAGE }],
+    };
+  }
+
+  if (
+    event.type === 'TEXT' &&
+    /^(yes|y|haan|han|ha|ok|okay|correct|same|this|yeh|ye)$/i.test(event.body.trim()) &&
+    context.candidateProductId
+  ) {
+    const nextCtx: OrderContext = {
+      ...context,
+      productId: context.candidateProductId,
+      productName: context.candidateProductName,
+      productRejected: false,
+      lastMatchedProductRejected: false,
+      awaitingNewProduct: false,
+      lastImageUsable: true,
+    };
+    return {
+      nextState: ConversationState.AWAITING_SIZE,
+      context: nextCtx,
+      actions: [buildSizePrompt(nextCtx, 'Great. Which size would you like?')],
+    };
+  }
+
+  return {
+    nextState: ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION,
+    context,
+    actions: [
+      {
+        type: 'SEND_BUTTONS',
+        body: 'Please confirm if this is the same product.',
+        buttons: [
+          { id: 'product_confirm_yes', title: 'Yes' },
+          { id: 'product_confirm_no', title: 'No' },
+        ],
       },
     ],
   };

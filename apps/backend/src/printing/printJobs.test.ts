@@ -18,6 +18,7 @@ const order = {
   id: 'order_123',
   orderNumber: 'KDA-123',
   status: OrderStatus.VERIFIED,
+  createdAt: new Date('2026-06-27T17:20:00.000Z'),
   shippingName: 'Test Customer',
   shippingAddress: 'A very long address, Near Market',
   shippingCity: 'Sonipat',
@@ -142,8 +143,8 @@ describe('print jobs', () => {
     await createAutomaticOrderLabelJob(tx as never, order.id);
 
     expect(upsert).toHaveBeenCalledTimes(2);
-    expect(upsert.mock.calls[0]?.[0].where.idempotencyKey).toBe('AUTO_ORDER_LABEL:order_123:UTR123');
-    expect(upsert.mock.calls[1]?.[0].where.idempotencyKey).toBe('AUTO_ORDER_LABEL:order_123:UTR123');
+    expect(upsert.mock.calls[0]?.[0].where.idempotencyKey).toBe('ORDER:order_123:PAYMENT_APPROVED:INITIAL');
+    expect(upsert.mock.calls[1]?.[0].where.idempotencyKey).toBe('ORDER:order_123:PAYMENT_APPROVED:INITIAL');
     expect(upsert.mock.calls[0]?.[0].create.type).toBe(PrintJobType.ORDER_LABEL);
     expect(upsert.mock.calls[0]?.[0].create.status).toBe(PrintJobStatus.PENDING);
   });

@@ -19,6 +19,8 @@ const RawLabelPayloadSchema = z.object({
   storeName: z.string().min(1),
   orderId: z.string().min(1),
   customerName: z.string().default(''),
+  /** ISO order date/time, rendered as date + HH:MM on the label. */
+  createdAt: z.string().default(''),
   /** Phone is pre-masked by the backend, e.g. "98XXXXXX21". */
   maskedPhone: z.string().default(''),
   phoneMasked: z.string().default(''),
@@ -76,11 +78,20 @@ export function maskPhone(phone: string | null | undefined): string {
 
 /**
  * Build the idempotency key for the automatic ORDER_LABEL created when a
- * payment is approved. Identical (orderId, paymentId) → identical key, so a
- * duplicate approval can never create a second automatic label.
+ * payment is approved. The key is fixed per order, so any retry of the payment
+ * approval (or a duplicate webhook) can never create a second initial label.
+ * Intentional reprints use a different, unique key.
  */
-export function autoOrderLabelIdempotencyKey(orderId: string, paymentId: string): string {
-  return `AUTO_ORDER_LABEL:${orderId}:${paymentId}`;
+export function autoOrderLabelIdempotencyKey(orderId: string): string {
+  return `ORDER:${orderId}:PAYMENT_APPROVED:INITIAL`;
+}
+
+/**
+ * Build a unique idempotency key for an intentional manual reprint of an
+ * order label. Each reprint is a distinct print job.
+ */
+export function reprintOrderLabelIdempotencyKey(orderId: string, uniqueId: string): string {
+  return `ORDER:${orderId}:REPRINT:${uniqueId}`;
 }
 
 export interface LabelRenderRequest {

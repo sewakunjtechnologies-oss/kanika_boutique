@@ -13,16 +13,17 @@ import {
   type SupportedImageMimeType,
 } from './schemas';
 import {
-  PERCEPTUAL_MATCH_THRESHOLD,
+  inspectImageBuffer,
   rankImageMatches,
   type ImageMatchScore,
   type ImageCandidate,
 } from './imageMatcher';
 
-export const PRODUCT_MATCH_CONFIDENCE_THRESHOLD = PERCEPTUAL_MATCH_THRESHOLD;
-export const MEDIUM_PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.72;
+export const PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.65;
+export const MEDIUM_PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.45;
 
 export type ProductMatchConfidenceBand = 'high' | 'medium' | 'low';
+export type ProductMatchDecision = 'auto_match' | 'candidate_confirmation' | 'no_match';
 
 export interface ProductMatchCandidate {
   productId: string;
@@ -53,24 +54,35 @@ export interface ProductMatchInput {
 export interface ProductMatchOutcome extends ProductMatchResult {
   meetsThreshold: boolean;
   confidenceBand: ProductMatchConfidenceBand;
+  decision: ProductMatchDecision;
   candidates: ProductMatchCandidate[];
   bestSecondMargin: number | null;
 }
 
 export function classifyProductMatchConfidence(confidence: number): ProductMatchConfidenceBand {
-  if (confidence >= PRODUCT_MATCH_CONFIDENCE_THRESHOLD) return 'high';
-  if (confidence >= MEDIUM_PRODUCT_MATCH_CONFIDENCE_THRESHOLD) return 'medium';
+  if (confidence >= env.IMAGE_AUTO_MATCH_THRESHOLD) return 'high';
+  if (confidence >= env.IMAGE_CANDIDATE_MATCH_THRESHOLD) return 'medium';
   return 'low';
 }
 
 export function hasClearBestImageCandidate(
   bestConfidence: number | null | undefined,
   secondBestConfidence: number | null | undefined,
-  requiredMargin = env.IMAGE_MATCH_SECOND_BEST_MIN_MARGIN,
+  requiredMargin = env.IMAGE_MIN_SCORE_MARGIN,
 ): boolean {
   if (bestConfidence === null || bestConfidence === undefined) return false;
   if (secondBestConfidence === null || secondBestConfidence === undefined) return true;
   return Math.max(bestConfidence - secondBestConfidence, 0) >= requiredMargin;
+}
+
+export function classifyImageMatchDecision(
+  topScore: number,
+  margin: number | null | undefined,
+): ProductMatchDecision {
+  const clearMargin = margin === null || margin === undefined || margin >= env.IMAGE_MIN_SCORE_MARGIN;
+  if (topScore >= env.IMAGE_AUTO_MATCH_THRESHOLD && clearMargin) return 'auto_match';
+  if (topScore >= env.IMAGE_CANDIDATE_MATCH_THRESHOLD) return 'candidate_confirmation';
+  return 'no_match';
 }
 
 const SYSTEM_PROMPT = `You match Indian ethnic-wear photos to a boutique's catalog.
@@ -95,6 +107,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       reasoning: 'catalog is empty',
       meetsThreshold: false,
       confidenceBand: 'low',
+      decision: 'no_match',
       candidates: [],
       bestSecondMargin: null,
     };
@@ -102,11 +115,32 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
 
   const validIds = new Set(catalog.map((c) => c.id));
   const queryBuffer = Buffer.from(input.imageBase64, 'base64');
+  const queryDiagnostics = await inspectImageBuffer(queryBuffer);
+  if (!queryDiagnostics.isUsable) {
+    botLog('IMAGE_MATCH_DIAGNOSTICS', {
+      query: queryDiagnostics,
+      decision: 'no_match',
+    });
+    return {
+      matchedProductId: null,
+      confidence: 0,
+      reasoning: `customer image rejected: ${queryDiagnostics.reason ?? 'unusable_image'}`,
+      meetsThreshold: false,
+      confidenceBand: 'low',
+      decision: 'no_match',
+      candidates: [],
+      bestSecondMargin: null,
+    };
+  }
 
   const catalogImages = input.catalog ? [] : await buildCatalogImageCandidates(catalog);
   botLog(
     'MATCH_STARTED',
-    { catalogSize: catalog.length, catalogImageCount: catalogImages.length },
+    {
+      catalogSize: catalog.length,
+      catalogImageCount: catalogImages.length,
+      queryImage: queryDiagnostics,
+    },
   );
 
   if (catalogImages.length > 0) {
@@ -121,16 +155,18 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
         reasoning: 'image could not be decoded for matching',
         meetsThreshold: false,
         confidenceBand: 'low',
+        decision: 'no_match',
         candidates: [],
         bestSecondMargin: null,
       };
     }
     const best = ranked[0];
     const second = ranked[1];
-    const candidates = ranked.slice(0, 3).map(scoreToCandidate);
+    const candidates = ranked.slice(0, 5).map(scoreToCandidate);
     const confidenceBand = classifyProductMatchConfidence(best?.confidence ?? 0);
     const bestSecondMargin = best && second ? Math.max(best.confidence - second.confidence, 0) : best ? 1 : null;
     const hasClearBestMatch = hasClearBestImageCandidate(best?.confidence, second?.confidence);
+    const decision = classifyImageMatchDecision(best?.confidence ?? 0, bestSecondMargin);
     botLog(
       'BEST_MATCH_FOUND',
       {
@@ -140,7 +176,10 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
         secondProductId: second?.productId ?? null,
         secondConfidence: second?.confidence ?? 0,
         bestSecondMargin,
-        requiredMargin: env.IMAGE_MATCH_SECOND_BEST_MIN_MARGIN,
+        requiredMargin: env.IMAGE_MIN_SCORE_MARGIN,
+        autoThreshold: env.IMAGE_AUTO_MATCH_THRESHOLD,
+        candidateThreshold: env.IMAGE_CANDIDATE_MATCH_THRESHOLD,
+        decision,
         averageHashSimilarity: best?.averageHashSimilarity ?? 0,
         differenceHashSimilarity: best?.differenceHashSimilarity ?? 0,
         colorSimilarity: best?.colorSimilarity ?? 0,
@@ -154,6 +193,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
         reasoning: `perceptual image match against catalog image for ${best.sku}`,
         meetsThreshold: true,
         confidenceBand,
+        decision: 'auto_match',
         candidates,
         bestSecondMargin,
       };
@@ -161,15 +201,16 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
 
     if (!env.CHATBOT_ENABLE_AI_IMAGE_MATCHING) {
       return {
-        matchedProductId: null,
+        matchedProductId: decision === 'candidate_confirmation' && best ? best.productId : null,
         confidence: best?.confidence ?? 0,
         reasoning: best
           ? hasClearBestMatch
-            ? `best perceptual match ${best.sku} was below threshold ${PERCEPTUAL_MATCH_THRESHOLD}`
+            ? `best perceptual match ${best.sku} requires customer confirmation`
             : `best perceptual match ${best.sku} was too close to the second-best match`
           : 'no usable catalog images',
         meetsThreshold: false,
         confidenceBand,
+        decision,
         candidates,
         bestSecondMargin,
       };
@@ -183,6 +224,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       reasoning: 'no deterministic image match and AI image matching disabled',
       meetsThreshold: false,
       confidenceBand: 'low',
+      decision: 'no_match',
       candidates: [],
       bestSecondMargin: null,
     };
@@ -220,6 +262,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       reasoning: 'matcher returned no valid output',
       meetsThreshold: false,
       confidenceBand: 'low',
+      decision: 'no_match',
       candidates: [],
       bestSecondMargin: null,
     };
@@ -230,7 +273,15 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       { returnedId: result.matchedProductId, catalogSize: catalog.length },
       'product matcher returned an ID not present in catalog',
     );
-    return { ...result, matchedProductId: null, meetsThreshold: false, confidenceBand: 'low', candidates: [], bestSecondMargin: null };
+    return {
+      ...result,
+      matchedProductId: null,
+      meetsThreshold: false,
+      confidenceBand: 'low',
+      decision: 'no_match',
+      candidates: [],
+      bestSecondMargin: null,
+    };
   }
 
   const confidenceBand = classifyProductMatchConfidence(result.confidence);
@@ -251,6 +302,11 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
         ]
       : [];
   const meetsThreshold = result.matchedProductId !== null && confidenceBand === 'high';
+  const decision: ProductMatchDecision = meetsThreshold
+    ? 'auto_match'
+    : result.matchedProductId && result.confidence >= env.IMAGE_CANDIDATE_MATCH_THRESHOLD
+      ? 'candidate_confirmation'
+      : 'no_match';
 
   logger.debug(
     {
@@ -264,9 +320,10 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
   );
   return {
     ...result,
-    matchedProductId: confidenceBand === 'low' ? null : result.matchedProductId,
+    matchedProductId: decision === 'no_match' ? null : result.matchedProductId,
     meetsThreshold,
     confidenceBand,
+    decision,
     candidates,
     bestSecondMargin: null,
   };
@@ -383,15 +440,34 @@ async function loadCatalogImageBuffer(
         maxContentLength: 5 * 1024 * 1024,
       });
       const contentType = String(resp.headers['content-type'] ?? '');
+      if (contentType && !contentType.toLowerCase().startsWith('image/')) {
+        botLog('CATALOG_IMAGE_SKIPPED', {
+          reason: 'non_image_content_type',
+          contentType,
+          imageRef: safeImageRef(imageUrl),
+        });
+        return null;
+      }
       return {
         mimeType: normalizeImageMime(contentType || imageUrl),
         buffer: Buffer.from(resp.data),
       };
     }
   } catch (err) {
-    botError('ERROR_DETAILS', err, { step: 'load_catalog_image_for_matcher', imageUrl });
+    botError('ERROR_DETAILS', err, { step: 'load_catalog_image_for_matcher', imageRef: safeImageRef(imageUrl) });
   }
   return null;
+}
+
+function safeImageRef(imageUrl: string): string {
+  if (!imageUrl) return '';
+  try {
+    const parsed = new URL(imageUrl, env.PUBLIC_BACKEND_URL);
+    const filename = parsed.pathname.split('/').filter(Boolean).pop() ?? 'image';
+    return `${parsed.hostname || 'local'}/.../${filename}`;
+  } catch {
+    return imageUrl.split('/').filter(Boolean).slice(-2).join('/');
+  }
 }
 
 function guessImageMime(filenameOrMime: string): SupportedImageMimeType {
