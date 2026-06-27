@@ -142,6 +142,19 @@ const textInput = (body: string) => ({
   },
 });
 
+const buttonInput = (id: string, title = id) => ({
+  conversationId: 'conv1',
+  customerId: 'cust1',
+  customerWhatsappNumber: '919999999999',
+  message: {
+    from: '919999999999',
+    id: 'wamid.BTN1',
+    timestamp: '1710000200',
+    type: 'interactive' as const,
+    interactive: { type: 'button_reply' as const, button_reply: { id, title } },
+  },
+});
+
 const originalGeminiKey = env.GEMINI_API_KEY;
 
 /** Count of every customer-facing outbound send across all channels. */
@@ -320,6 +333,115 @@ describe('confirm-first image matching', () => {
 
     expect(downloadMediaToBuffer).not.toHaveBeenCalled();
     expect(customerReplyCount()).toBe(0);
+  });
+});
+
+describe('YES product confirmation → availability by variant stock', () => {
+  function confirmCtx(extra: Record<string, unknown> = {}) {
+    h.conv.state = 'AWAITING_PRODUCT_MATCH_CONFIRMATION';
+    h.conv.contextJson = {
+      candidateProductId: 'p1',
+      candidateProductName: 'Three-Piece Kurti',
+      candidateCreatedAt: new Date('2999-01-01T00:00:00.000Z').toISOString(),
+      activeFlowVersion: 1,
+      activeMediaId: 'm1',
+      ...extra,
+    } as never;
+  }
+  function prod(variants: Array<{ size: string; stock: number }>) {
+    return {
+      id: 'p1',
+      sku: 'ABC-123',
+      name: 'Three-Piece Kurti',
+      basePrice: '1760',
+      imageUrl: '/uploads/p1.jpg',
+      isActive: true,
+      variants: variants.map((v) => ({ ...v, id: `v_${v.size}`, color: null, reserved: 0, physicalStock: v.stock })),
+    };
+  }
+
+  test('1 + 4 + 8 + 10: YES with one in-stock variant → loads candidate, available, AWAITING_SIZE, no size needed', async () => {
+    confirmCtx();
+    vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '40', stock: 3 }]) as never);
+
+    await handleInboundMessage(buttonInput('product_confirm_yes', 'YES') as never);
+
+    expect(getProductAvailability).toHaveBeenCalledWith('p1'); // correct candidate loaded
+    expect(allSentText()).toContain('Available');
+    expect(allSentText()).toContain('Article: ABC-123');
+    expect(h.conv.state).toBe('AWAITING_SIZE');
+  });
+
+  test('2: YES with several in-stock variants → available, sizes sorted numerically', async () => {
+    confirmCtx();
+    vi.mocked(getProductAvailability).mockResolvedValue(
+      prod([{ size: '44', stock: 1 }, { size: '38', stock: 2 }, { size: '42', stock: 1 }, { size: '40', stock: 5 }]) as never,
+    );
+
+    await handleInboundMessage(buttonInput('product_confirm_yes', 'YES') as never);
+
+    expect(allSentText()).toContain('Available sizes: 38, 40, 42, 44');
+  });
+
+  test('5: YES with all variants zero stock → "This product is currently unavailable."', async () => {
+    confirmCtx();
+    vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '40', stock: 0 }, { size: '42', stock: 0 }]) as never);
+
+    await handleInboundMessage(buttonInput('product_confirm_yes', 'YES') as never);
+
+    expect(allSentText()).toContain('This product is currently unavailable.');
+    expect(allSentText()).not.toContain('This is not available.');
+  });
+
+  test('7: available response shows NO stock counts', async () => {
+    confirmCtx();
+    vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '40', stock: 3 }, { size: '42', stock: 9 }]) as never);
+
+    await handleInboundMessage(buttonInput('product_confirm_yes', 'YES') as never);
+
+    expect(allSentText()).not.toMatch(/\b\d+\s*pc|stock|: 3|: 9/i);
+  });
+
+  test('button value is normalized (PRODUCT_CONFIRM_YES still confirms)', async () => {
+    confirmCtx();
+    vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '40', stock: 3 }]) as never);
+
+    await handleInboundMessage(buttonInput('PRODUCT_CONFIRM_YES', 'YES') as never);
+
+    expect(h.conv.state).toBe('AWAITING_SIZE');
+    expect(allSentText()).toContain('Available');
+  });
+
+  test('9: a stale YES after a newer photo reset does not start the old order', async () => {
+    // A newer photo hard-reset the flow: state back to confirmation-pending, candidate gone.
+    h.conv.state = 'AWAITING_PRODUCT_CONFIRMATION';
+    h.conv.contextJson = { activeFlowVersion: 2, activeMediaId: 'm2' } as never;
+
+    await handleInboundMessage(buttonInput('product_confirm_yes', 'YES') as never);
+
+    expect(getProductAvailability).not.toHaveBeenCalled();
+    expect(h.conv.state).not.toBe('AWAITING_SIZE');
+  });
+
+  test('NO clears the candidate and sends nothing', async () => {
+    confirmCtx();
+
+    await handleInboundMessage(buttonInput('product_confirm_no', 'NO') as never);
+
+    expect(customerReplyCount()).toBe(0);
+    expect(h.conv.state).toBe('AWAITING_NEW_PRODUCT');
+  });
+
+  test('11: size-specific stock is checked only after the customer chooses a size', async () => {
+    h.conv.state = 'AWAITING_SIZE';
+    h.conv.contextJson = { productId: 'p1', productName: 'Three-Piece Kurti', availableSizes: ['40', '42'], qty: 1 } as never;
+    vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '40', stock: 2 }, { size: '42', stock: 0 }]) as never);
+
+    // Choosing the in-stock size advances to name.
+    await handleInboundMessage(buttonInput('size_40', '40') as never);
+    expect(getProductAvailability).toHaveBeenCalledWith('p1');
+    expect(h.conv.state).toBe('AWAITING_NAME');
+    expect(allSentText().toLowerCase()).toContain('name');
   });
 });
 

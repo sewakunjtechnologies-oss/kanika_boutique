@@ -202,6 +202,10 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
   const productConfirmationHandled = await handleProductConfirmationInput(input, conv, event);
   if (productConfirmationHandled) return;
 
+  // Size-specific stock is verified only here, AFTER the customer chooses a size.
+  const sizeSelectionHandled = await handleSizeSelectionInput(input, conv, event);
+  if (sizeSelectionHandled) return;
+
   if (conv.state === ConversationState.IDLE) {
     const handled = await handleIdleCatalogInquiry(input, event);
     if (handled) return;
@@ -1236,6 +1240,39 @@ async function handleIdleCatalogInquiry(input: OrchestratorInput, event: ChatEve
   return true;
 }
 
+/**
+ * Normalize a YES/NO confirmation tap. Matches our button id `product_confirm_yes`
+ * and tolerant variants (YES, yes, confirm_yes, PRODUCT_CONFIRM_YES). Returns null
+ * for a real product-list selection (`product_<id>`/`match_<id>`/`alt_<id>`) so it
+ * is never mistaken for a confirmation.
+ */
+function confirmButtonDecision(event: ChatEvent): 'yes' | 'no' | null {
+  if (event.type !== 'BUTTON_REPLY' && event.type !== 'LIST_REPLY') return null;
+  const id = (event.id ?? '').trim().toLowerCase();
+  const token = id.replace(/^product_/, '');
+  if (token === 'confirm_yes' || token === 'yes') return 'yes';
+  if (token === 'confirm_no' || token === 'no') return 'no';
+  // Title fallback only when the id carries no product reference.
+  if (!id || id === 'yes' || id === 'no') {
+    const title = (event.title ?? '').trim().toLowerCase();
+    if (title === 'yes') return 'yes';
+    if (title === 'no') return 'no';
+  }
+  return null;
+}
+
+/** Sort sizes numerically (38,40,42,44,46), falling back to lexicographic for letter sizes (S,M,L). */
+function sortSizes(sizes: string[]): string[] {
+  return [...sizes].sort((a, b) => {
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+    if (Number.isFinite(na)) return -1;
+    if (Number.isFinite(nb)) return 1;
+    return a.localeCompare(b);
+  });
+}
+
 async function handleProductConfirmationInput(
   input: OrchestratorInput,
   conv: Conversation,
@@ -1268,36 +1305,56 @@ async function handleProductConfirmationInput(
         ? event.title
         : '';
 
-  if (
-    (event.type === 'BUTTON_REPLY' || event.type === 'LIST_REPLY') &&
-    (event.id.startsWith('match_') || event.id.startsWith('product_') || event.id.startsWith('alt_'))
-  ) {
-    const productId = event.id.replace(/^(match_|product_|alt_)/, '');
-    await beginOrderFromProduct(input, productId, extractRequestedSize(text), ctx);
-    return true;
-  }
-
-  if ((event.type === 'BUTTON_REPLY' || event.type === 'LIST_REPLY') && event.id === 'product_confirm_yes') {
-    const productId = conv.state === ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION
+  // Handle YES/NO confirmation FIRST so `product_confirm_yes`/`product_confirm_no`
+  // are never mistaken for a `product_<id>` list selection (the prefix collision
+  // that produced a bogus "confirm_yes" product id and "This is not available.").
+  const confirmDecision = confirmButtonDecision(event);
+  if (confirmDecision === 'yes') {
+    const selectedProductId = conv.state === ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION
       ? ctx.candidateProductId
       : ctx.productId;
-    if (!productId) {
+    botLog('PRODUCT_CONFIRMATION_RECEIVED', {
+      conversationId: input.conversationId,
+      candidateProductId: ctx.candidateProductId ?? null,
+      selectedProductId: selectedProductId ?? null,
+      decision: 'yes',
+    });
+    if (!selectedProductId) {
       await sendText(input.customerWhatsappNumber, PRODUCT_FIRST_MESSAGE);
       return true;
     }
-    await beginOrderFromProduct(input, productId, ctx.requestedSize ?? extractRequestedSize(text), {
+    // Keep candidateProductId until the product is loaded; beginOrderFromProduct
+    // persists productId (the selected product) and drops the candidate fields.
+    await beginOrderFromProduct(input, selectedProductId, ctx.requestedSize ?? extractRequestedSize(text), {
       ...ctx,
-      productId,
+      productId: selectedProductId,
     });
     return true;
   }
-
-  if ((event.type === 'BUTTON_REPLY' || event.type === 'LIST_REPLY') && event.id === 'product_confirm_no') {
+  if (confirmDecision === 'no') {
+    botLog('PRODUCT_CONFIRMATION_RECEIVED', {
+      conversationId: input.conversationId,
+      candidateProductId: ctx.candidateProductId ?? null,
+      selectedProductId: null,
+      decision: 'no',
+    });
     if (conv.state === ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION) {
       await rejectCandidateProductMatch(input, ctx);
     } else {
       await askForNewProductAfterRejection(input, ctx);
     }
+    return true;
+  }
+
+  // Real product-list selection (product_<id> / match_<id> / alt_<id>) — never confirm_*.
+  if (
+    (event.type === 'BUTTON_REPLY' || event.type === 'LIST_REPLY') &&
+    (event.id.startsWith('match_') ||
+      event.id.startsWith('alt_') ||
+      (event.id.startsWith('product_') && !event.id.startsWith('product_confirm_')))
+  ) {
+    const productId = event.id.replace(/^(match_|product_|alt_)/, '');
+    await beginOrderFromProduct(input, productId, extractRequestedSize(text), ctx);
     return true;
   }
 
@@ -1679,20 +1736,119 @@ async function askCandidateProductMatchConfirmation(
   return true;
 }
 
+/**
+ * Verify the customer's chosen size against LIVE inventory (the only point where
+ * size-specific stock is checked). On stock → advance to name (quantity 1, no
+ * decrement). On a now-unavailable size → short message + remaining sizes.
+ */
+async function handleSizeSelectionInput(
+  input: OrchestratorInput,
+  conv: Conversation,
+  event: ChatEvent,
+): Promise<boolean> {
+  if (conv.state !== ConversationState.AWAITING_SIZE) return false;
+  const ctx = readOrderContext(conv.contextJson);
+  if (!ctx.productId) return false;
+
+  let size: string | null = null;
+  if ((event.type === 'BUTTON_REPLY' || event.type === 'LIST_REPLY') && event.id.startsWith('size_')) {
+    size = event.id.slice('size_'.length);
+  } else if (event.type === 'TEXT') {
+    const candidate = event.body.trim().toUpperCase();
+    if (/^[A-Z0-9]{1,6}$/.test(candidate)) size = candidate;
+  }
+  if (!size) return false; // not a size reply — let the reducer re-prompt
+
+  const availability = await getProductAvailability(ctx.productId);
+  if (!availability || !availability.isActive) {
+    await prisma.conversation.update({
+      where: { id: conv.id },
+      data: { state: ConversationState.IDLE, contextJson: {} },
+    });
+    await sendText(input.customerWhatsappNumber, 'This product is currently unavailable.');
+    return true;
+  }
+
+  const inStockVariants = availability.variants.filter((v) => v.stock > 0);
+  const availableSizes = sortSizes([...new Set(inStockVariants.map((v) => v.size))]);
+  const chosen = inStockVariants.find((v) => v.size.toUpperCase() === size!.toUpperCase());
+
+  if (!chosen) {
+    botLog('SIZE_SELECTION', {
+      conversationId: conv.id,
+      productId: ctx.productId,
+      requestedSize: size,
+      decision: 'size_unavailable',
+      availableSizes,
+    });
+    await prisma.conversation.update({
+      where: { id: conv.id },
+      data: { state: ConversationState.AWAITING_SIZE, contextJson: { ...ctx, availableSizes } as never },
+    });
+    if (availableSizes.length === 0) {
+      await sendText(input.customerWhatsappNumber, 'This product is currently unavailable.');
+      return true;
+    }
+    await sendSizePicker(
+      input.customerWhatsappNumber,
+      `Size ${size} is not available. Available sizes: ${availableSizes.join(', ')}.`,
+      availableSizes,
+    );
+    return true;
+  }
+
+  botLog('SIZE_SELECTION', {
+    conversationId: conv.id,
+    productId: ctx.productId,
+    requestedSize: chosen.size,
+    decision: 'in_stock',
+  });
+  // Stock confirmed — do NOT decrement here (reservation/deduction happens later).
+  await prisma.conversation.update({
+    where: { id: conv.id },
+    data: { state: ConversationState.AWAITING_NAME, contextJson: { ...ctx, size: chosen.size, qty: 1 } as never },
+  });
+  await sendText(input.customerWhatsappNumber, 'What name should we put on the order?');
+  return true;
+}
+
 async function beginOrderFromProduct(
   input: OrchestratorInput,
   productId: string,
   requestedSize: string | null,
   previousContext: OrderContext = {},
 ): Promise<void> {
+  // Load the product with ALL its active size variants and per-size stock.
+  // The product is available if ANY active variant has stock > 0 — never gated
+  // on a selected size or a product-level quantity.
   const availability = await getProductAvailability(productId);
   if (!availability || !availability.isActive) {
-    await sendText(input.customerWhatsappNumber, 'This is not available.');
+    botLog('PRODUCT_CONFIRMATION_RECEIVED', {
+      conversationId: input.conversationId,
+      candidateProductId: previousContext.candidateProductId ?? null,
+      selectedProductId: productId,
+      variantCount: 0,
+      availableVariantCount: 0,
+      availableSizes: [],
+      decision: 'unavailable',
+    });
+    await sendText(input.customerWhatsappNumber, 'This product is currently unavailable.');
     return;
   }
 
   const availableVariants = availability.variants.filter((v) => v.stock > 0);
-  const availableSizes = [...new Set(availableVariants.map((v) => v.size))];
+  const availableSizes = sortSizes([...new Set(availableVariants.map((v) => v.size))]);
+
+  botLog('PRODUCT_CONFIRMATION_RECEIVED', {
+    conversationId: input.conversationId,
+    candidateProductId: previousContext.candidateProductId ?? null,
+    selectedProductId: availability.id,
+    variantCount: availability.variants.length,
+    availableVariantCount: availableVariants.length,
+    availableSizes,
+    decision: availableVariants.length > 0 ? 'available' : 'unavailable',
+  });
+
   const baseContext: OrderContext = {
     productId: availability.id,
     productName: availability.name,
@@ -1709,14 +1865,9 @@ async function beginOrderFromProduct(
     productRejected: false,
   };
 
-  logger.info(
-    { conversationId: input.conversationId, productId, inStock: availableSizes.length > 0, availableSizes },
-    'availability reply sent',
-  );
-
-  // Out of stock: one neutral message, no alternatives.
-  if (availableSizes.length === 0) {
-    await sendText(input.customerWhatsappNumber, `Sorry, ${availability.name} is currently out of stock.`);
+  // No in-stock variant: unavailable. (selectedProductId already saved above.)
+  if (availableVariants.length === 0) {
+    await sendText(input.customerWhatsappNumber, 'This product is currently unavailable.');
     await prisma.conversation.update({
       where: { id: input.conversationId },
       data: { state: ConversationState.IDLE, contextJson: {} },
