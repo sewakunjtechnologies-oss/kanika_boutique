@@ -503,30 +503,18 @@ export async function markPrintJobFailed(id: string, deviceId: string, error: st
   return prisma.printJob.findUnique({ where: { id } });
 }
 
-<<<<<<< HEAD
-export async function retryOldestFailedPrintJob(deviceId: string): Promise<PrintJob | null> {
-=======
 export async function retryOldestFailedPrintJob(requestedBy: string): Promise<PrintJob | null> {
->>>>>>> ffbb103 (again subscribing)
   return prisma.$transaction(async (tx) => {
     const job = await tx.printJob.findFirst({
       where: {
         status: PrintJobStatus.FAILED,
         attempts: { lt: env.PRINT_JOB_MAX_ATTEMPTS },
       },
-<<<<<<< HEAD
-      orderBy: [{ updatedAt: 'asc' }],
-    });
-    if (!job) return null;
-
-    const updated = await tx.printJob.updateMany({
-=======
       orderBy: [{ updatedAt: 'asc' }, { createdAt: 'asc' }],
     });
     if (!job) return null;
 
     const result = await tx.printJob.updateMany({
->>>>>>> ffbb103 (again subscribing)
       where: {
         id: job.id,
         status: PrintJobStatus.FAILED,
@@ -536,17 +524,10 @@ export async function retryOldestFailedPrintJob(requestedBy: string): Promise<Pr
         status: PrintJobStatus.PENDING,
         claimedAt: null,
         claimedBy: null,
-<<<<<<< HEAD
-        lastError: `Retry requested by ${deviceId}`,
-      },
-    });
-    if (updated.count !== 1) return null;
-=======
         lastError: `Retry requested by ${requestedBy}`,
       },
     });
     if (result.count !== 1) return null;
->>>>>>> ffbb103 (again subscribing)
     return tx.printJob.findUnique({ where: { id: job.id } });
   });
 }

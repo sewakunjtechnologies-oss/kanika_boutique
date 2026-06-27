@@ -1,8 +1,5 @@
 package com.kanikadesigns.printbridge.data
 
-<<<<<<< HEAD
-enum class LabelSize(val wireValue: String, val widthDots: Int, val heightDots: Int, val widthMm: String, val heightMm: String) {
-=======
 enum class LabelSize(
     val wireValue: String,
     val widthDots: Int,
@@ -10,7 +7,6 @@ enum class LabelSize(
     val widthMm: String,
     val heightMm: String,
 ) {
->>>>>>> ffbb103 (again subscribing)
     FOUR_BY_THREE("4x3", 812, 609, "101.6", "76.2"),
     FOUR_BY_FOUR("4x4", 812, 812, "101.6", "101.6");
 

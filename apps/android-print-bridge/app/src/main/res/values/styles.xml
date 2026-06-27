@@ -1,16 +1,9 @@
 <resources>
-<<<<<<< HEAD
-    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:fontFamily">sans</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:colorAccent">#111827</item>
-=======
     <style name="Theme.KanikaPrintBridge" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="colorPrimary">#111827</item>
         <item name="colorPrimaryVariant">#111827</item>
         <item name="colorOnPrimary">#FFFFFF</item>
->>>>>>> ffbb103 (again subscribing)
     </style>
 </resources>

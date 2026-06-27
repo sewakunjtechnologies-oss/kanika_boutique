@@ -7,10 +7,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.kanikadesigns.printbridge.data.BridgeRuntimeStatus
-<<<<<<< HEAD
-=======
 import com.kanikadesigns.printbridge.data.BridgeSettings
->>>>>>> ffbb103 (again subscribing)
 import com.kanikadesigns.printbridge.data.PrintedJobStore
 import com.kanikadesigns.printbridge.data.SettingsStore
 import com.kanikadesigns.printbridge.network.BackendClient
@@ -41,23 +38,12 @@ class PrintBridgeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-<<<<<<< HEAD
-        when (intent?.action) {
-            ACTION_STOP -> {
-                settingsStore.setServiceWanted(false)
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            else -> startBridgeLoop()
-        }
-=======
         if (intent?.action == ACTION_STOP) {
             settingsStore.setServiceWanted(false)
             stopSelf()
             return START_NOT_STICKY
         }
         startBridgeLoop()
->>>>>>> ffbb103 (again subscribing)
         return START_STICKY
     }
 
@@ -74,15 +60,7 @@ class PrintBridgeService : Service() {
         settingsStore.setServiceWanted(true)
         startForeground(
             NotificationHelper.SERVICE_NOTIFICATION_ID,
-<<<<<<< HEAD
-            NotificationHelper.serviceNotification(
-                this,
-                "Kanika Print Bridge running",
-                "Starting printer bridge...",
-            ),
-=======
             NotificationHelper.serviceNotification(this, "Kanika Print Bridge running", "Starting printer bridge..."),
->>>>>>> ffbb103 (again subscribing)
         )
         if (!settings.isConfigured) {
             updateStatus("Configuration incomplete", lastError = "Fill backend, token, device ID and printer IP.")
@@ -126,11 +104,7 @@ class PrintBridgeService : Service() {
         backend: BackendClient,
         tcpPrinter: TcpPrinterClient,
         generator: PrinterCommandGenerator,
-<<<<<<< HEAD
-        settings: com.kanikadesigns.printbridge.data.BridgeSettings,
-=======
         settings: BridgeSettings,
->>>>>>> ffbb103 (again subscribing)
     ) {
         if (printedJobStore.isCompleted(job.id)) {
             backend.markPrinted(job.id)
@@ -148,11 +122,7 @@ class PrintBridgeService : Service() {
             updateStatus("Last job printed", "${job.type} ${job.id}")
         } catch (err: Exception) {
             val message = err.message ?: "Print failed"
-<<<<<<< HEAD
-            backend.markFailed(job.id, message)
-=======
             runCatching { backend.markFailed(job.id, message) }
->>>>>>> ffbb103 (again subscribing)
             updateStatus("Print failed", "Job ${job.id}", message)
         }
     }

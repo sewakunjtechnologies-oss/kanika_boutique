@@ -390,20 +390,21 @@ describe('print jobs', () => {
     expect(tx.printJob.findFirst).toHaveBeenCalledWith({
       where: {
         status: PrintJobStatus.FAILED,
-        attempts: expect.any(Object),
+        attempts: expect.objectContaining({ lt: expect.any(Number) }),
       },
-      orderBy: [{ updatedAt: 'asc' }],
+      orderBy: [{ updatedAt: 'asc' }, { createdAt: 'asc' }],
     });
     expect(tx.printJob.updateMany).toHaveBeenCalledWith({
       where: {
         id: 'failed_job',
         status: PrintJobStatus.FAILED,
-        attempts: expect.any(Object),
+        attempts: expect.objectContaining({ lt: expect.any(Number) }),
       },
       data: expect.objectContaining({
         status: PrintJobStatus.PENDING,
         claimedAt: null,
         claimedBy: null,
+        lastError: 'Retry requested by android_1',
       }),
     });
   });
