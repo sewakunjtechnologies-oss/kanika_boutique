@@ -176,28 +176,69 @@ export async function sendTemplate(
 // Media download — 2-step: GET /{id} for URL, then GET URL (also bearer-authed)
 // =============================================================================
 
-export async function downloadMedia(mediaId: string): Promise<{ storedPath: string; mimeType: string }> {
+/** Customer media is a temporary matching input — keep this conservative. */
+const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
+const SUPPORTED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
+/**
+ * Fetch WhatsApp media entirely in memory and return the validated Buffer.
+ * Never touches the filesystem, so it is safe on hosts (e.g. Render) where the
+ * uploads disk is not writable. Logs only safe metadata — never the access
+ * token or the signed media URL.
+ */
+export async function downloadMediaToBuffer(
+  mediaId: string,
+): Promise<{ buffer: Buffer; mimeType: string }> {
   if (!env.META_ACCESS_TOKEN) {
     throw new Error('META_ACCESS_TOKEN required for media download');
   }
-  botLog('IMAGE_MEDIA_URL_FETCH_STARTED', { mediaId });
-  const meta = await graphApi.get<{ url?: string; mime_type?: string; sha256?: string }>(`/${mediaId}`);
-  const url = meta.data.url;
-  const mimeType = meta.data.mime_type ?? 'application/octet-stream';
-  if (!url) throw new Error(`No URL returned for media ${mediaId}`);
-  botLog('IMAGE_MEDIA_URL_FETCHED', {
-    mediaId,
-    mimeType,
-    hasUrl: Boolean(url),
-    sha256: meta.data.sha256 ?? null,
-  });
+  botLog('IMAGE_MEDIA_DOWNLOAD_STARTED', { mediaId });
+  let stage = 'fetch_media_url';
+  try {
+    const meta = await graphApi.get<{ url?: string; mime_type?: string; sha256?: string }>(`/${mediaId}`);
+    const url = meta.data.url;
+    const metaMime = meta.data.mime_type ?? 'application/octet-stream';
+    if (!url) throw new Error('no_media_url');
 
-  const dl = await graphApi.get<ArrayBuffer>(url, {
-    responseType: 'arraybuffer',
-    baseURL: '',
-  });
+    stage = 'download_bytes';
+    const dl = await graphApi.get<ArrayBuffer>(url, { responseType: 'arraybuffer', baseURL: '' });
 
-  const buffer = Buffer.from(dl.data);
+    stage = 'validate';
+    if (dl.status < 200 || dl.status >= 300) throw new Error(`bad_status_${dl.status}`);
+    const headerType = (String(dl.headers?.['content-type'] ?? '').split(';')[0] ?? '')
+      .trim()
+      .toLowerCase();
+    const mimeType = headerType || metaMime.toLowerCase();
+    const buffer = Buffer.from(dl.data);
+    if (buffer.byteLength === 0) throw new Error('empty_media_body');
+    if (buffer.byteLength > MAX_MEDIA_BYTES) throw new Error('media_too_large');
+    if (!mimeType.startsWith('image/')) throw new Error('non_image_content_type');
+    if (!SUPPORTED_IMAGE_MIME.has(mimeType)) throw new Error('unsupported_image_type');
+
+    botLog('IMAGE_MEDIA_DOWNLOAD_SUCCEEDED', {
+      mediaId,
+      status: dl.status,
+      mimeType,
+      bytes: buffer.byteLength,
+    });
+    return { buffer, mimeType };
+  } catch (err) {
+    botLog('IMAGE_MEDIA_DOWNLOAD_FAILED', {
+      mediaId,
+      failureStage: stage,
+      error: err instanceof Error ? err.message : 'unknown_error',
+    });
+    throw err;
+  }
+}
+
+/**
+ * Disk-backed variant used by workflows that must persist the media (e.g. the
+ * payment screenshot shown in the dashboard). The image matcher does NOT use
+ * this — it consumes the in-memory Buffer from {@link downloadMediaToBuffer}.
+ */
+export async function downloadMedia(mediaId: string): Promise<{ storedPath: string; mimeType: string }> {
+  const { buffer, mimeType } = await downloadMediaToBuffer(mediaId);
   const ext = mimeToExt(mimeType);
   const relativePath = path.posix.join('whatsapp-media', `${mediaId}${ext}`);
   const storedPath = await storage.save(buffer, relativePath, mimeType);

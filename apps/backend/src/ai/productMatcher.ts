@@ -134,6 +134,10 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
   }
 
   const catalogImages = input.catalog ? [] : await buildCatalogImageCandidates(catalog);
+  botLog('IMAGE_MATCH_CANDIDATES_LOADED', {
+    candidateCount: catalogImages.length,
+    catalogSize: catalog.length,
+  });
   botLog(
     'MATCH_STARTED',
     {

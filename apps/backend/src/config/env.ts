@@ -59,11 +59,11 @@ const envSchema = z.object({
   CHATBOT_ENABLE_AI_IMAGE_MATCHING: envBool.default(false),
   // Product-photo matching policy. Higher score = better visual match.
   // Auto-match replies to the customer only when score and runner-up margin are both strong.
-  IMAGE_AUTO_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
-  // Below the auto threshold the bot stays silent. Retained for matcher banding/diagnostics.
+  IMAGE_AUTO_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.65),
+  // Candidate band: below auto but >= this, the bot asks the customer to confirm the likely product.
   IMAGE_CANDIDATE_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.45),
   // Minimum gap between best and second-best distinct products for automatic acceptance.
-  IMAGE_MIN_SCORE_MARGIN: z.coerce.number().min(0).max(1).default(0.05),
+  IMAGE_MIN_SCORE_MARGIN: z.coerce.number().min(0).max(1).default(0.08),
   // Deprecated aliases retained so older deployments do not fail env parsing.
   IMAGE_MATCH_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).optional(),
   IMAGE_MATCH_SECOND_BEST_MIN_MARGIN: z.coerce.number().min(0).max(1).optional(),

@@ -8,7 +8,7 @@ import {
 } from '../ai/intentClassifier';
 import { matchProduct, type ProductMatchCandidate, type ProductMatchOutcome } from '../ai/productMatcher';
 import { extractPayment } from '../ai/paymentExtractor';
-import { downloadMedia, sendImage, sendInteractiveButtons, sendInteractiveList, sendText } from '../whatsapp/client';
+import { downloadMedia, downloadMediaToBuffer, sendImage, sendInteractiveButtons, sendInteractiveList, sendText } from '../whatsapp/client';
 import { notifyAdminsPaymentPending, shouldSendAdminNotification } from '../whatsapp/adminNotifications';
 import { isTakeoverActive } from '../whatsapp/conversations';
 import { storage } from '../storage';
@@ -804,11 +804,10 @@ async function buildIntentInput(
   if (msg.type === 'text') return { text: msg.text.body };
   if (msg.type === 'image') {
     try {
-      const downloaded = await downloadMedia(msg.image.id);
-      const buf = await fs.readFile(storage.resolve(downloaded.storedPath));
+      const { buffer, mimeType } = await downloadMediaToBuffer(msg.image.id);
       return {
-        imageBase64: buf.toString('base64'),
-        imageMediaType: normalizeMime(downloaded.mimeType),
+        imageBase64: buffer.toString('base64'),
+        imageMediaType: normalizeMime(mimeType),
         text: msg.image.caption,
       };
     } catch (err) {
@@ -1209,8 +1208,9 @@ async function handleIdleCatalogInquiry(input: OrchestratorInput, event: ChatEve
   if (looksLikePhotoFollowUp(text)) {
     const recentMediaId = await findRecentConversationImageMediaId(input.conversationId);
     if (recentMediaId) {
+      // Silent flow: download + match the recent photo, then send at most one
+      // reply only after a decision. No acknowledgement before matching.
       logger.info({ conversationId: input.conversationId }, 'using recent image context');
-      await sendText(input.customerWhatsappNumber, 'Got it — checking the last photo for availability...');
       const outcome = await runProductMatchOutcome(recentMediaId);
       await respondToProductMatchOutcome(input, outcome, extractRequestedSize(text), recentMediaId);
       return true;
@@ -1664,11 +1664,7 @@ async function respondToProductMatchOutcome(
   const bestSecondMargin = outcome?.bestSecondMargin ?? null;
   const hasClearBestMatch = bestSecondMargin === null || bestSecondMargin >= requiredMargin;
 
-  // Approved policy: reply ONLY on a confident, unambiguous single match:
-  //   topScore >= IMAGE_AUTO_MATCH_THRESHOLD
-  //   AND (single valid candidate OR topScore - secondScore >= IMAGE_MIN_SCORE_MARGIN)
-  // Everything else (low confidence, ambiguous margin, or no match) is fully
-  // silent: no WhatsApp reply, no order, no conversation step, no stock change.
+  // AUTO_MATCH: confident, unambiguous single match. Reply with availability.
   if (
     matchedProductId &&
     outcome?.decision === 'auto_match' &&
@@ -1686,6 +1682,14 @@ async function respondToProductMatchOutcome(
     return;
   }
 
+  // CANDIDATE_MATCH: score in the candidate band. Ask the customer to confirm
+  // the likely inventory product with exactly one message.
+  if (matchedProductId && outcome?.decision === 'candidate_confirmation') {
+    const sent = await askCandidateProductMatchConfirmation(input, outcome, requestedSize, sourceMediaId);
+    if (sent) return;
+  }
+
+  // NO_MATCH / matcher failure / empty inventory: send nothing.
   const reason =
     score < candidateThreshold
       ? 'below_candidate_threshold'
@@ -1700,7 +1704,78 @@ async function respondToProductMatchOutcome(
     score,
     hasCandidate: Boolean(matchedProductId),
   });
-  // Intentionally send nothing. Silent no-match is the approved business rule.
+  // Intentionally send nothing.
+}
+
+/**
+ * CANDIDATE_MATCH responder. Sends exactly one message — the inventory image
+ * (or a button prompt when no image is available) asking the customer to
+ * confirm. Returns true when a confirmation was sent, false to fall through to
+ * the silent branch (e.g. the candidate product is missing or inactive).
+ */
+async function askCandidateProductMatchConfirmation(
+  input: OrchestratorInput,
+  outcome: ProductMatchOutcome,
+  requestedSize: string | null,
+  sourceMediaId: string | null,
+): Promise<boolean> {
+  const candidate =
+    outcome.candidates.find((item) => item.productId === outcome.matchedProductId) ?? outcome.candidates[0];
+  if (!candidate) return false;
+
+  const availability = await getProductAvailability(candidate.productId);
+  if (!availability || !availability.isActive) return false;
+
+  const availableSizes = availability.variants.filter((v) => v.stock > 0).map((v) => v.size);
+  const candidateContext: OrderContext = compactOrderContext({
+    candidateProductId: candidate.productId,
+    candidateProductName: availability.name || candidate.name,
+    candidateProductSku: availability.sku || candidate.sku,
+    candidateImageUrl: candidate.imageUrl,
+    candidateTopScore: candidate.confidence,
+    candidateSecondScore: outcome.candidates[1]?.confidence ?? undefined,
+    candidateScoreMargin: outcome.bestSecondMargin ?? undefined,
+    candidateCreatedAt: new Date().toISOString(),
+    candidateProductIds: outcome.candidates.map((item) => item.productId).slice(0, 5),
+    requestedSize: requestedSize ?? undefined,
+    availableSizes,
+    lastMatchedImageMediaId: sourceMediaId ?? undefined,
+    lastImageUsable: true,
+    awaitingNewProduct: false,
+    productRejected: false,
+    lastMatchedProductRejected: false,
+  });
+
+  await prisma.conversation.update({
+    where: { id: input.conversationId },
+    data: {
+      state: ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION,
+      intent: Intent.ORDER_INTENT,
+      contextJson: candidateContext as never,
+    },
+  });
+
+  // Exactly one customer-facing message.
+  const question = 'I found a possible match. Is this the same product? Reply YES or NO.';
+  const imageLink = toPublicImageLink(candidate.imageUrl);
+  if (imageLink) {
+    await sendImage(input.customerWhatsappNumber, { link: imageLink }, question);
+  } else {
+    await sendInteractiveButtons(input.customerWhatsappNumber, 'I found a possible match. Is this the same product?', [
+      { id: 'product_confirm_yes', title: 'Yes' },
+      { id: 'product_confirm_no', title: 'No' },
+    ]);
+  }
+
+  logImageMatchDecision(input, outcome, 'MATCHED', 'candidate_confirmation');
+  emitToDashboard('image_match_candidate', {
+    conversationId: input.conversationId,
+    productId: candidate.productId,
+    score: candidate.confidence,
+    secondScore: outcome.candidates[1]?.confidence ?? null,
+    margin: outcome.bestSecondMargin,
+  });
+  return true;
 }
 
 async function beginOrderFromProduct(
@@ -2076,32 +2151,34 @@ function logImageMatchDecision(
   reason: string,
 ): void {
   const candidates = outcome?.candidates ?? [];
-  logger.info(
-    {
-      whatsappMessageId: input.message.id,
-      conversationId: input.conversationId,
-      candidateCount: candidates.length,
-      bestProductId: outcome?.matchedProductId ?? candidates[0]?.productId ?? null,
-      topScore: outcome?.confidence ?? 0,
-      secondScore: candidates[1]?.confidence ?? null,
-      scoreMargin: outcome?.bestSecondMargin ?? null,
-      matchDecision: decision,
-      reason,
-    },
-    'image match decision',
-  );
+  const detail = {
+    whatsappMessageId: input.message.id,
+    conversationId: input.conversationId,
+    candidateCount: candidates.length,
+    matchedProductId: outcome?.matchedProductId ?? candidates[0]?.productId ?? null,
+    topScore: outcome?.confidence ?? 0,
+    secondScore: candidates[1]?.confidence ?? null,
+    scoreMargin: outcome?.bestSecondMargin ?? null,
+    decision,
+    reason,
+  };
+  botLog('IMAGE_MATCH_DECISION', detail);
+  botLog(decision === 'MATCHED' ? 'WHATSAPP_MATCH_REPLY_SENT' : 'WHATSAPP_SILENT_NO_MATCH', {
+    whatsappMessageId: input.message.id,
+    conversationId: input.conversationId,
+    candidateCount: candidates.length,
+    topScore: detail.topScore,
+    reason,
+  });
 }
 
 async function runProductMatchOutcome(mediaId: string): Promise<ProductMatchOutcome | null> {
   try {
-    logger.info({ mediaId }, 'media download started');
-    const downloaded = await downloadMedia(mediaId);
-    logger.info({ mediaId, storedPath: downloaded.storedPath }, 'media download success');
-    const buf = await fs.readFile(storage.resolve(downloaded.storedPath));
-    logger.info({ mediaId }, 'inventory matching started');
+    // Download the customer photo fully in memory — never write it to disk.
+    const { buffer, mimeType } = await downloadMediaToBuffer(mediaId);
     const outcome = await matchProduct({
-      imageBase64: buf.toString('base64'),
-      imageMediaType: normalizeMime(downloaded.mimeType),
+      imageBase64: buffer.toString('base64'),
+      imageMediaType: normalizeMime(mimeType),
     });
     logger.info(
       {
