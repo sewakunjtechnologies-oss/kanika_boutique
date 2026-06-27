@@ -23,6 +23,8 @@ const order = {
   shippingCity: 'Sonipat',
   shippingState: 'Haryana',
   shippingPincode: '110001',
+  subtotal: { toString: () => '4440' },
+  shippingFee: { toString: () => '100' },
   totalAmount: { toString: () => '4540' },
   paymentExtractedUtr: 'UTR123',
   paymentScreenshotUrl: 'uploads/payment.png',
@@ -31,6 +33,7 @@ const order = {
   items: [
     {
       quantity: 2,
+      unitPrice: { toString: () => '2220' },
       variant: {
         size: '40',
         product: { name: 'Blue Floral Pure Cotton Suit', sku: 'ARTICLE-1' },
@@ -110,6 +113,20 @@ describe('print jobs', () => {
     expect(payload.sku).toBe('ARTICLE-1');
     expect(payload.size).toBe('40');
     expect(payload.quantity).toBe(2);
+    expect(payload.items).toEqual([
+      {
+        name: 'Blue Floral Pure Cotton Suit',
+        sku: 'ARTICLE-1',
+        size: '40',
+        quantity: 2,
+        unitPrice: 2220,
+        amount: 4440,
+      },
+    ]);
+    expect(payload.subtotal).toBe(4440);
+    expect(payload.deliveryCharge).toBe(100);
+    expect(payload.discount).toBe(0);
+    expect(payload.grandTotal).toBe(4540);
     expect(payload.paymentType).toBe('UPI');
     expect(payload.amount).toBe(4540);
   });

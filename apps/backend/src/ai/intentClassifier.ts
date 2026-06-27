@@ -284,7 +284,7 @@ function normalizeTriggerText(text: string): string {
     .toLowerCase()
     .replace(/[!?.,;:]+/g, ' ')
     .replace(/(.)\1{2,}/g, '$1$1')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ')
     .trim();
 }
 
@@ -306,7 +306,8 @@ function isAvailabilityTriggerText(text: string): boolean {
   return (
     /\b(available|availability)\b/.test(text) ||
     /\b(stock|do you have|have this|mil jayega|hai kya|h kya)\b/.test(text) ||
-    /\b(ye|yeh|yah|is this|this|suit|kurti|product).*\b(hai kya|available hai kya)\b/.test(text)
+    /\b(ye|yeh|yah|is this|this|suit|kurti|product).*\b(hai kya|available hai kya)\b/.test(text) ||
+    /उपलब्ध|मिलेगा|मिल जाएगा|है क्या|अवेलेबल|अवेलेबल है क्या/u.test(text)
   );
 }
 
@@ -315,7 +316,8 @@ function isOrderTriggerText(text: string): boolean {
     /\b(i want to order|want to order|mujhe .*order karna|order this|order karna|new order)\b/.test(text) ||
     /\b(can i buy|i want to buy|want to buy|buy this|purchase this|book this)\b/.test(text) ||
     /\b(i want this|mujhe ye|mujhe yeh|ye chahiye|yeh chahiye).*\b(suit|kurti|product|piece|item)?\b/.test(text) ||
-    /\b(order|buy|purchase|book)\b.*\b(suit|kurti|product|item|piece|this|ye|yeh)\b/.test(text)
+    /\b(order|buy|purchase|book)\b.*\b(suit|kurti|product|item|piece|this|ye|yeh)\b/.test(text) ||
+    /ऑर्डर|आर्डर|खरीद|बुक|मुझे ये चाहिए|मुझे यह चाहिए/u.test(text)
   );
 }
 

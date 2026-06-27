@@ -9,6 +9,7 @@ import androidx.security.crypto.MasterKey
 class SettingsStore(context: Context) {
     private val appContext = context.applicationContext
     private val prefs: SharedPreferences = appContext.getSharedPreferences("kanika_bridge_settings", Context.MODE_PRIVATE)
+<<<<<<< HEAD
     private val securePrefs: SharedPreferences = createSecurePrefs(appContext)
 
     fun read(): BridgeSettings {
@@ -22,6 +23,22 @@ class SettingsStore(context: Context) {
             labelSize = LabelSize.from(prefs.getString(KEY_LABEL_SIZE, LabelSize.FOUR_BY_THREE.wireValue) ?: LabelSize.FOUR_BY_THREE.wireValue),
             pollIntervalSeconds = prefs.getInt(KEY_POLL_INTERVAL_SECONDS, BridgeSettings().pollIntervalSeconds),
             direction = prefs.getInt(KEY_DIRECTION, BridgeSettings().direction),
+=======
+    private val securePrefs: SharedPreferences = encryptedPreferences(appContext)
+
+    fun read(): BridgeSettings {
+        val defaults = BridgeSettings()
+        return BridgeSettings(
+            backendUrl = prefs.getString(KEY_BACKEND_URL, defaults.backendUrl) ?: defaults.backendUrl,
+            printAgentToken = securePrefs.getString(KEY_PRINT_AGENT_TOKEN, "") ?: "",
+            deviceId = prefs.getString(KEY_DEVICE_ID, defaults.deviceId) ?: defaults.deviceId,
+            printerIp = prefs.getString(KEY_PRINTER_IP, "") ?: "",
+            printerPort = prefs.getInt(KEY_PRINTER_PORT, defaults.printerPort),
+            printerLanguage = PrinterLanguage.from(prefs.getString(KEY_PRINTER_LANGUAGE, PrinterLanguage.TSPL.name) ?: PrinterLanguage.TSPL.name),
+            labelSize = LabelSize.from(prefs.getString(KEY_LABEL_SIZE, LabelSize.FOUR_BY_THREE.wireValue) ?: LabelSize.FOUR_BY_THREE.wireValue),
+            pollIntervalSeconds = prefs.getInt(KEY_POLL_INTERVAL_SECONDS, defaults.pollIntervalSeconds),
+            direction = prefs.getInt(KEY_DIRECTION, defaults.direction),
+>>>>>>> ffbb103 (again subscribing)
             autoStartAfterBoot = prefs.getBoolean(KEY_AUTO_START_AFTER_BOOT, false),
         )
     }
@@ -51,9 +68,15 @@ class SettingsStore(context: Context) {
 
     fun saveLastStatus(status: BridgeRuntimeStatus) {
         prefs.edit {
+<<<<<<< HEAD
             putString(KEY_LAST_JOB, status.lastJob)
             putString(KEY_LAST_ERROR, status.lastError)
             putBoolean(KEY_SERVICE_RUNNING, status.running)
+=======
+            putBoolean(KEY_SERVICE_RUNNING, status.running)
+            putString(KEY_LAST_JOB, status.lastJob)
+            putString(KEY_LAST_ERROR, status.lastError)
+>>>>>>> ffbb103 (again subscribing)
         }
     }
 
@@ -65,7 +88,11 @@ class SettingsStore(context: Context) {
         )
     }
 
+<<<<<<< HEAD
     private fun createSecurePrefs(context: Context): SharedPreferences {
+=======
+    private fun encryptedPreferences(context: Context): SharedPreferences {
+>>>>>>> ffbb103 (again subscribing)
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()

@@ -124,6 +124,7 @@ describe('WhatsApp bot trigger gate', () => {
     ['ye available hai kya', 'availability'],
     ['available hai kya', 'availability'],
     ['ye suit available hai kya', 'availability'],
+    ['क्या ये उपलब्ध है', 'availability'],
     ['I want to order this', 'order'],
     ['I want to order something', 'order'],
     ['Can I buy this?', 'order'],
@@ -131,6 +132,7 @@ describe('WhatsApp bot trigger gate', () => {
     ['Order this suit', 'order'],
     ['book this', 'order'],
     ['mujhe ye order karna hai', 'order'],
+    ['मुझे ये सूट ऑर्डर करना है', 'order'],
     ['show me products', 'order'],
     ['more options', 'order'],
   ])('triggers %s as %s', (message, intent) => {

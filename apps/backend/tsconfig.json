@@ -5,6 +5,7 @@
     "rootDir": "src",
     "paths": {
       "@kda/db": ["../../packages/db/src/index.ts"],
+      "@kda/labels": ["../../packages/labels/src/index.ts"],
       "@kda/shared": ["../../packages/shared/src/index.ts"]
     }
   },

@@ -54,12 +54,23 @@ export interface ProductMatchOutcome extends ProductMatchResult {
   meetsThreshold: boolean;
   confidenceBand: ProductMatchConfidenceBand;
   candidates: ProductMatchCandidate[];
+  bestSecondMargin: number | null;
 }
 
 export function classifyProductMatchConfidence(confidence: number): ProductMatchConfidenceBand {
   if (confidence >= PRODUCT_MATCH_CONFIDENCE_THRESHOLD) return 'high';
   if (confidence >= MEDIUM_PRODUCT_MATCH_CONFIDENCE_THRESHOLD) return 'medium';
   return 'low';
+}
+
+export function hasClearBestImageCandidate(
+  bestConfidence: number | null | undefined,
+  secondBestConfidence: number | null | undefined,
+  requiredMargin = env.IMAGE_MATCH_SECOND_BEST_MIN_MARGIN,
+): boolean {
+  if (bestConfidence === null || bestConfidence === undefined) return false;
+  if (secondBestConfidence === null || secondBestConfidence === undefined) return true;
+  return Math.max(bestConfidence - secondBestConfidence, 0) >= requiredMargin;
 }
 
 const SYSTEM_PROMPT = `You match Indian ethnic-wear photos to a boutique's catalog.
@@ -85,6 +96,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       meetsThreshold: false,
       confidenceBand: 'low',
       candidates: [],
+      bestSecondMargin: null,
     };
   }
 
@@ -110,24 +122,32 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
         meetsThreshold: false,
         confidenceBand: 'low',
         candidates: [],
+        bestSecondMargin: null,
       };
     }
     const best = ranked[0];
+    const second = ranked[1];
     const candidates = ranked.slice(0, 3).map(scoreToCandidate);
     const confidenceBand = classifyProductMatchConfidence(best?.confidence ?? 0);
+    const bestSecondMargin = best && second ? Math.max(best.confidence - second.confidence, 0) : best ? 1 : null;
+    const hasClearBestMatch = hasClearBestImageCandidate(best?.confidence, second?.confidence);
     botLog(
       'BEST_MATCH_FOUND',
       {
         productId: best?.productId ?? null,
         sku: best?.sku ?? null,
         confidence: best?.confidence ?? 0,
+        secondProductId: second?.productId ?? null,
+        secondConfidence: second?.confidence ?? 0,
+        bestSecondMargin,
+        requiredMargin: env.IMAGE_MATCH_SECOND_BEST_MIN_MARGIN,
         averageHashSimilarity: best?.averageHashSimilarity ?? 0,
         differenceHashSimilarity: best?.differenceHashSimilarity ?? 0,
         colorSimilarity: best?.colorSimilarity ?? 0,
       },
     );
 
-    if (best && confidenceBand === 'high') {
+    if (best && confidenceBand === 'high' && hasClearBestMatch) {
       return {
         matchedProductId: best.productId,
         confidence: best.confidence,
@@ -135,19 +155,23 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
         meetsThreshold: true,
         confidenceBand,
         candidates,
+        bestSecondMargin,
       };
     }
 
     if (!env.CHATBOT_ENABLE_AI_IMAGE_MATCHING) {
       return {
-        matchedProductId: confidenceBand === 'medium' && best ? best.productId : null,
+        matchedProductId: null,
         confidence: best?.confidence ?? 0,
         reasoning: best
-          ? `best perceptual match ${best.sku} was below threshold ${PERCEPTUAL_MATCH_THRESHOLD}`
+          ? hasClearBestMatch
+            ? `best perceptual match ${best.sku} was below threshold ${PERCEPTUAL_MATCH_THRESHOLD}`
+            : `best perceptual match ${best.sku} was too close to the second-best match`
           : 'no usable catalog images',
         meetsThreshold: false,
         confidenceBand,
         candidates,
+        bestSecondMargin,
       };
     }
   }
@@ -160,6 +184,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       meetsThreshold: false,
       confidenceBand: 'low',
       candidates: [],
+      bestSecondMargin: null,
     };
   }
 
@@ -196,6 +221,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       meetsThreshold: false,
       confidenceBand: 'low',
       candidates: [],
+      bestSecondMargin: null,
     };
   }
 
@@ -204,7 +230,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       { returnedId: result.matchedProductId, catalogSize: catalog.length },
       'product matcher returned an ID not present in catalog',
     );
-    return { ...result, matchedProductId: null, meetsThreshold: false, confidenceBand: 'low', candidates: [] };
+    return { ...result, matchedProductId: null, meetsThreshold: false, confidenceBand: 'low', candidates: [], bestSecondMargin: null };
   }
 
   const confidenceBand = classifyProductMatchConfidence(result.confidence);
@@ -242,6 +268,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
     meetsThreshold,
     confidenceBand,
     candidates,
+    bestSecondMargin: null,
   };
 }
 

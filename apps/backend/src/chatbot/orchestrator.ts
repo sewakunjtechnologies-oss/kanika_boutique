@@ -19,6 +19,7 @@ import {
   isProductChangeIntent,
   PRODUCT_REJECTED_MESSAGE,
   PRODUCT_FIRST_MESSAGE,
+  CHECKING_PRODUCT_MESSAGE,
   transition,
   type Action,
   type ChatEvent,
@@ -1558,13 +1559,18 @@ async function respondToProductMatchOutcome(
   sourceMediaId: string | null = null,
 ): Promise<void> {
   const threshold = env.IMAGE_MATCH_MIN_CONFIDENCE;
+  const requiredMargin = env.IMAGE_MATCH_SECOND_BEST_MIN_MARGIN;
   const score = outcome?.confidence ?? 0;
   const matchedProductId = outcome?.matchedProductId ?? null;
+  const bestSecondMargin = outcome?.bestSecondMargin ?? null;
+  const hasClearBestMatch = bestSecondMargin === null || bestSecondMargin >= requiredMargin;
   logger.info(
     {
       conversationId: input.conversationId,
       score,
       threshold,
+      bestSecondMargin,
+      requiredMargin,
       band: outcome?.confidenceBand ?? 'none',
       matchedProductId,
     },
@@ -1572,8 +1578,9 @@ async function respondToProductMatchOutcome(
   );
 
   // Accept ONLY a confident single match. Higher score = better match; anything
-  // below the configured threshold is treated as no match.
-  if (matchedProductId && score >= threshold) {
+  // below the configured threshold or too close to the second-best candidate is
+  // treated as no match.
+  if (matchedProductId && outcome?.meetsThreshold && score >= threshold && hasClearBestMatch) {
     logger.info(
       { conversationId: input.conversationId, productId: matchedProductId, score },
       'inventory match accepted',
@@ -1587,8 +1594,9 @@ async function respondToProductMatchOutcome(
     return;
   }
 
-  // Below threshold / no match: stay silent by default. Log internally and
-  // record a dashboard event so the owner can review ignored photos later.
+  // Below threshold / no match: never guess and never create an order. Reply to
+  // the customer so the bot does not appear dead, and surface the issue for the
+  // dashboard.
   logger.info(
     { conversationId: input.conversationId, score, threshold, reason: outcome?.reasoning ?? 'matcher_failed' },
     'inventory match rejected',
@@ -1603,11 +1611,7 @@ async function respondToProductMatchOutcome(
     hasCandidate: Boolean(matchedProductId),
   });
 
-  if (env.REPLY_ON_UNMATCHED_IMAGE) {
-    await requestClearerProductReference(input, outcome?.candidates ?? []);
-    return;
-  }
-  await resetConversationToIdle(input.conversationId);
+  await requestClearerProductReference(input, outcome?.candidates ?? []);
 }
 
 async function requestClearerProductReference(
@@ -1947,7 +1951,7 @@ function sameSize(a: string, b: string): boolean {
 /**
  * True when inventory has at least one active, in-stock product with a
  * searchable image. If false, a customer photo can never match anything, so we
- * skip download/matching entirely and stay silent.
+ * skip download/matching and send the standard no-confident-match fallback.
  */
 async function hasSearchableInventoryImages(): Promise<boolean> {
   const count = await prisma.product.count({
@@ -1960,30 +1964,24 @@ async function hasSearchableInventoryImages(): Promise<boolean> {
   return count > 0;
 }
 
-async function resetConversationToIdle(conversationId: string): Promise<void> {
-  await prisma.conversation.update({
-    where: { id: conversationId },
-    data: { state: ConversationState.IDLE, contextJson: {} },
-  });
-}
-
 /**
- * Unified entry for an inbound customer product photo. Processes the image
- * silently: guards on inventory, downloads + matches, and only replies on a
- * high-confidence match (handled inside respondToProductMatchOutcome). Never
- * throws — the webhook has already returned 200.
+ * Unified entry for an inbound customer product photo. Acknowledges the photo,
+ * guards on real dashboard inventory, downloads + matches, and never proceeds
+ * unless the match is high-confidence and unambiguous. Never throws — the
+ * webhook has already returned 200.
  */
 async function processInboundProductImage(
   input: OrchestratorInput,
   mediaId: string,
   requestedSize: string | null,
 ): Promise<void> {
+  await sendText(input.customerWhatsappNumber, CHECKING_PRODUCT_MESSAGE);
   if (!(await hasSearchableInventoryImages())) {
     logger.info(
       { conversationId: input.conversationId, senderLast4: last4(input.customerWhatsappNumber) },
       'image ignored: inventory image index empty',
     );
-    await resetConversationToIdle(input.conversationId);
+    await requestClearerProductReference(input);
     return;
   }
   const outcome = await runProductMatchOutcome(mediaId);

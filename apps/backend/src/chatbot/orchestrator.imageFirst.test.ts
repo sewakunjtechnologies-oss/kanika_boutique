@@ -159,7 +159,7 @@ beforeEach(() => {
   vi.mocked(getProductAvailability).mockReset();
   vi.mocked(createOrderFromContext).mockReset();
   vi.mocked(emitToDashboard).mockClear();
-  env.IMAGE_MATCH_MIN_CONFIDENCE = 0.78;
+  env.IMAGE_MATCH_MIN_CONFIDENCE = 0.9;
   env.REPLY_ON_UNMATCHED_IMAGE = false;
   // Force deterministic intent classification (no live Gemini calls in tests).
   env.GEMINI_API_KEY = '';
@@ -177,32 +177,62 @@ const lowOutcome = {
   candidates: [],
   reasoning: 'no match',
   meetsThreshold: false,
+  bestSecondMargin: null,
 };
 
-describe('image-first availability flow (silent unless confident match)', () => {
-  test('A: no inventory match → webhook 200, NO reply, logged as ignored', async () => {
+describe('image-first availability flow', () => {
+  test('A: no inventory match → webhook 200, clearer-photo reply, no order', async () => {
     vi.mocked(matchProduct).mockResolvedValue(lowOutcome as never);
 
     await expect(handleInboundMessage(imageInput as never)).resolves.toBeUndefined();
 
     expect(downloadMedia).toHaveBeenCalled(); // image WAS processed
-    expect(anyCustomerReplySent()).toBe(false); // but no customer reply
+    expect(sendText).toHaveBeenCalledWith('919999999999', 'Let me check this product for you.');
+    expect(vi.mocked(sendText).mock.calls.map((c) => c[1]).join('\n')).toContain("couldn't confidently match");
+    expect(createOrderFromContext).not.toHaveBeenCalled();
     expect(emitToDashboard).toHaveBeenCalledWith('image_unmatched', expect.objectContaining({ conversationId: 'conv1' }));
   });
 
-  test('B: match below threshold → no reply, no order created', async () => {
+  test('B: match below threshold → fallback reply, no order created', async () => {
     vi.mocked(matchProduct).mockResolvedValue({
       matchedProductId: 'p1',
-      confidence: 0.6, // below 0.78
+      confidence: 0.6,
       confidenceBand: 'medium',
       candidates: [{ productId: 'p1', sku: 'SKU1', name: 'Suit', imageUrl: '', confidence: 0.6 }],
       reasoning: 'weak match',
       meetsThreshold: false,
+      bestSecondMargin: 1,
     } as never);
 
     await handleInboundMessage(imageInput as never);
 
-    expect(anyCustomerReplySent()).toBe(false);
+    expect(vi.mocked(sendText).mock.calls.map((c) => c[1]).join('\n')).toContain("couldn't confidently match");
+    expect(createOrderFromContext).not.toHaveBeenCalled();
+  });
+
+  test('B2: visually similar ambiguous candidates → fallback reply, no order created', async () => {
+    vi.mocked(matchProduct).mockResolvedValue({
+      matchedProductId: 'p1',
+      confidence: 0.95,
+      confidenceBand: 'high',
+      candidates: [
+        { productId: 'p1', sku: 'SKU1', name: 'Blue Suit', imageUrl: '', confidence: 0.95 },
+        { productId: 'p2', sku: 'SKU2', name: 'Similar Blue Suit', imageUrl: '', confidence: 0.93 },
+      ],
+      reasoning: 'ambiguous match',
+      meetsThreshold: true,
+      bestSecondMargin: 0.02,
+    } as never);
+
+    await handleInboundMessage(imageInput as never);
+
+    expect(vi.mocked(sendText).mock.calls.map((c) => c[1]).join('\n')).toContain("couldn't confidently match");
+    expect(sendInteractiveList).toHaveBeenCalledWith(
+      '919999999999',
+      expect.stringContaining('closest catalog photos'),
+      'View matches',
+      expect.any(Array),
+    );
     expect(createOrderFromContext).not.toHaveBeenCalled();
   });
 
@@ -214,6 +244,7 @@ describe('image-first availability flow (silent unless confident match)', () => 
       candidates: [{ productId: 'p1', sku: 'SKU1', name: 'Blue Suit', imageUrl: '', confidence: 0.95 }],
       reasoning: 'strong match',
       meetsThreshold: true,
+      bestSecondMargin: 1,
     } as never);
     vi.mocked(getProductAvailability).mockResolvedValue({
       id: 'p1',
@@ -248,6 +279,7 @@ describe('image-first availability flow (silent unless confident match)', () => 
       candidates: [{ productId: 'p1', sku: 'SKU1', name: 'Blue Suit', imageUrl: '', confidence: 0.95 }],
       reasoning: 'strong match',
       meetsThreshold: true,
+      bestSecondMargin: 1,
     } as never);
     vi.mocked(getProductAvailability).mockResolvedValue({
       id: 'p1',
@@ -263,22 +295,13 @@ describe('image-first availability flow (silent unless confident match)', () => 
     expect(reply).toContain('out of stock');
   });
 
-  test('A2 (inventory guard): empty image index → no download, no reply, logged', async () => {
+  test('A2 (inventory guard): empty image index → no download, customer fallback', async () => {
     vi.mocked(prisma.product.count).mockResolvedValue(0 as never);
 
     await handleInboundMessage(imageInput as never);
 
     expect(downloadMedia).not.toHaveBeenCalled();
-    expect(anyCustomerReplySent()).toBe(false);
-  });
-
-  test('REPLY_ON_UNMATCHED_IMAGE=true → no-match does send the clearer-photo reply', async () => {
-    env.REPLY_ON_UNMATCHED_IMAGE = true;
-    vi.mocked(matchProduct).mockResolvedValue(lowOutcome as never);
-
-    await handleInboundMessage(imageInput as never);
-
-    expect(sendText).toHaveBeenCalled();
+    expect(vi.mocked(sendText).mock.calls.map((c) => c[1]).join('\n')).toContain("couldn't confidently match");
   });
 });
 

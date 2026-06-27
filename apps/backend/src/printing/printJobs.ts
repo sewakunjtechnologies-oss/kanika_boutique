@@ -26,12 +26,15 @@ interface OrderForLabel {
   shippingCity: string;
   shippingState: string;
   shippingPincode: string;
+  subtotal: { toString(): string };
+  shippingFee: { toString(): string };
   totalAmount: { toString(): string };
   paymentExtractedUtr: string | null;
   paymentScreenshotUrl: string | null;
   customer: { whatsappNumber: string };
   items: {
     quantity: number;
+    unitPrice: { toString(): string };
     variant: {
       size: string;
       product: {
@@ -172,9 +175,23 @@ export async function createTestLabelJob(requestedBy = 'print-agent'): Promise<P
     sku: 'KD-PCS-101',
     size: '40',
     quantity: 1,
+    items: [
+      {
+        name: 'Pure Cotton Suit With Long Name',
+        sku: 'KD-PCS-101',
+        size: '40',
+        quantity: 1,
+        unitPrice: 2270,
+        amount: 2270,
+      },
+    ],
+    subtotal: 2270,
+    deliveryCharge: 100,
+    discount: 0,
+    grandTotal: 2370,
     paymentType: 'UPI',
     paymentStatus: 'PAID',
-    amount: 2270,
+    amount: 2370,
     barcodeValue: 'KD-TEST-1001',
     addressLine: 'H.No. 25, Sector 14',
   };
@@ -486,18 +503,30 @@ export async function markPrintJobFailed(id: string, deviceId: string, error: st
   return prisma.printJob.findUnique({ where: { id } });
 }
 
+<<<<<<< HEAD
 export async function retryOldestFailedPrintJob(deviceId: string): Promise<PrintJob | null> {
+=======
+export async function retryOldestFailedPrintJob(requestedBy: string): Promise<PrintJob | null> {
+>>>>>>> ffbb103 (again subscribing)
   return prisma.$transaction(async (tx) => {
     const job = await tx.printJob.findFirst({
       where: {
         status: PrintJobStatus.FAILED,
         attempts: { lt: env.PRINT_JOB_MAX_ATTEMPTS },
       },
+<<<<<<< HEAD
       orderBy: [{ updatedAt: 'asc' }],
     });
     if (!job) return null;
 
     const updated = await tx.printJob.updateMany({
+=======
+      orderBy: [{ updatedAt: 'asc' }, { createdAt: 'asc' }],
+    });
+    if (!job) return null;
+
+    const result = await tx.printJob.updateMany({
+>>>>>>> ffbb103 (again subscribing)
       where: {
         id: job.id,
         status: PrintJobStatus.FAILED,
@@ -507,10 +536,17 @@ export async function retryOldestFailedPrintJob(deviceId: string): Promise<Print
         status: PrintJobStatus.PENDING,
         claimedAt: null,
         claimedBy: null,
+<<<<<<< HEAD
         lastError: `Retry requested by ${deviceId}`,
       },
     });
     if (updated.count !== 1) return null;
+=======
+        lastError: `Retry requested by ${requestedBy}`,
+      },
+    });
+    if (result.count !== 1) return null;
+>>>>>>> ffbb103 (again subscribing)
     return tx.printJob.findUnique({ where: { id: job.id } });
   });
 }
@@ -548,6 +584,10 @@ export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
   const productName = firstItem ? `${firstItem.variant.product.name}${productSuffix}` : 'Order item';
   const address = splitShippingAddress(order.shippingAddress);
   const phoneMasked = maskPhone(order.customer.whatsappNumber);
+  const subtotal = moneyNumber(order.subtotal);
+  const deliveryCharge = moneyNumber(order.shippingFee);
+  const discount = 0;
+  const grandTotal = moneyNumber(order.totalAmount);
 
   return {
     templateVersion: 'online-order-label-v1',
@@ -561,9 +601,21 @@ export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
     sku: firstItem?.variant.product.sku ?? '-',
     size: firstItem?.variant.size ?? '-',
     quantity,
+    items: order.items.map((item) => ({
+      name: item.variant.product.name,
+      sku: item.variant.product.sku,
+      size: item.variant.size,
+      quantity: item.quantity,
+      unitPrice: moneyNumber(item.unitPrice),
+      amount: moneyNumber(item.unitPrice) * item.quantity,
+    })),
+    subtotal,
+    deliveryCharge,
+    discount,
+    grandTotal,
     paymentType: 'UPI',
     paymentStatus: 'PAID',
-    amount: Number(order.totalAmount.toString()),
+    amount: grandTotal,
     barcodeValue: order.orderNumber,
     addressLine: address.addressLine1,
     addressLine1: address.addressLine1,

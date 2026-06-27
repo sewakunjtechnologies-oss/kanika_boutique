@@ -5,6 +5,15 @@ import type { LabelSizeName } from './profiles';
 // PrintJob and what the bridge renders. It deliberately contains NO secrets:
 // no payment screenshots, UPI ids, tokens or full phone numbers.
 
+const LabelItemSchema = z.object({
+  name: z.string().default(''),
+  sku: z.string().default(''),
+  size: z.string().default(''),
+  quantity: z.number().int().nonnegative().default(0),
+  unitPrice: z.number().nonnegative().default(0),
+  amount: z.number().nonnegative().default(0),
+});
+
 const RawLabelPayloadSchema = z.object({
   templateVersion: z.enum(['online-order-label-v1', 'test-label-v1']),
   storeName: z.string().min(1),
@@ -17,6 +26,11 @@ const RawLabelPayloadSchema = z.object({
   sku: z.string().default(''),
   size: z.string().default(''),
   quantity: z.number().int().nonnegative().default(1),
+  items: z.array(LabelItemSchema).default([]),
+  subtotal: z.number().nonnegative().default(0),
+  deliveryCharge: z.number().nonnegative().default(0),
+  discount: z.number().nonnegative().default(0),
+  grandTotal: z.number().nonnegative().default(0),
   amount: z.number().nonnegative().default(0),
   paymentStatus: z.string().default('PAID'),
   paymentType: z.string().default('UPI'),

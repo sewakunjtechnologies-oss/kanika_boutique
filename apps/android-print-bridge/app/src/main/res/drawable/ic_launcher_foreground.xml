@@ -8,5 +8,9 @@
         android:pathData="M18,18h72v72h-72z" />
     <path
         android:fillColor="#FFFFFF"
+<<<<<<< HEAD
         android:pathData="M30,31h48v12h-48zM30,49h48v8h-48zM30,63h9v14h-9zM44,63h5v14h-5zM54,63h9v14h-9zM68,63h10v14h-10z" />
+=======
+        android:pathData="M30,30h48v12h-48zM30,49h48v8h-48zM30,63h8v14h-8zM43,63h5v14h-5zM53,63h9v14h-9zM67,63h11v14h-11z" />
+>>>>>>> ffbb103 (again subscribing)
 </vector>

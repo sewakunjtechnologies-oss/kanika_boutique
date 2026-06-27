@@ -4,6 +4,12 @@ import { calculateDeliveryCharge } from '@kda/shared';
 import { isReservationActiveForStock } from './orderService';
 
 describe('delivery charge calculation', () => {
+  test('charges 0 for zero, invalid, or negative quantities', () => {
+    expect(calculateDeliveryCharge(0)).toBe(0);
+    expect(calculateDeliveryCharge(-1)).toBe(0);
+    expect(calculateDeliveryCharge(Number.NaN)).toBe(0);
+  });
+
   test('charges 100 for one piece', () => {
     expect(calculateDeliveryCharge(1)).toBe(100);
   });
@@ -18,6 +24,20 @@ describe('delivery charge calculation', () => {
 
   test('charges 250 for four pieces', () => {
     expect(calculateDeliveryCharge(4)).toBe(250);
+  });
+
+  test('charges 300 for five pieces', () => {
+    expect(calculateDeliveryCharge(5)).toBe(300);
+  });
+
+  test('uses total pieces across multiple order lines', () => {
+    const lines = [
+      { sku: 'A', quantity: 1 },
+      { sku: 'B', quantity: 2 },
+    ];
+    const totalPieces = lines.reduce((sum, line) => sum + line.quantity, 0);
+    expect(totalPieces).toBe(3);
+    expect(calculateDeliveryCharge(totalPieces)).toBe(200);
   });
 });
 

@@ -22,9 +22,15 @@ class TcpPrinterClient(
             socket.tcpNoDelay = true
             socket.soTimeout = connectTimeoutMs
             socket.connect(InetSocketAddress(host, port), connectTimeoutMs)
+<<<<<<< HEAD
             socket.getOutputStream().use { out ->
                 out.write(bytes)
                 out.flush()
+=======
+            socket.getOutputStream().use { output ->
+                output.write(bytes)
+                output.flush()
+>>>>>>> ffbb103 (again subscribing)
             }
         }
     }

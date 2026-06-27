@@ -6,6 +6,7 @@ node_modules/
 # Production builds
 dist/
 build/
+.gradle/
 .next/
 out/
 
@@ -28,6 +29,7 @@ uploads/*
 .idea/
 *.swp
 .DS_Store
+local.properties
 
 # Prisma generated
 packages/db/src/generated/

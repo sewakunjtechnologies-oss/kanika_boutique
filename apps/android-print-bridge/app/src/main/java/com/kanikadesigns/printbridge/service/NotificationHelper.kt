@@ -40,7 +40,11 @@ object NotificationHelper {
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(title)
+<<<<<<< HEAD
             .setContentText(detail)
+=======
+            .setContentText(detail.lines().firstOrNull().orEmpty())
+>>>>>>> ffbb103 (again subscribing)
             .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
             .setContentIntent(openIntent)
             .setOngoing(true)
