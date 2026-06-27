@@ -65,6 +65,13 @@ export interface OrderContext {
   total?: number;
   /** In-stock sizes for the matched product. Set by orchestrator after product match. */
   availableSizes?: string[];
+  /** Monotonic version bumped whenever a new product photo starts a fresh flow.
+   * Async match results are discarded if this no longer matches (latest wins). */
+  activeFlowVersion?: number;
+  /** WhatsApp media ID of the photo that owns the current product-match flow. */
+  activeMediaId?: string;
+  /** Latest processed inbound WhatsApp message id for this conversation. */
+  latestInboundMessageId?: string;
 }
 
 // =============================================================================
@@ -631,10 +638,12 @@ function handleSize(event: ChatEvent, context: OrderContext): TransitionResult {
     };
   }
 
+  // Every WhatsApp order is exactly one piece — never ask quantity. Go straight
+  // from size to the customer name.
   return {
-    nextState: ConversationState.AWAITING_QTY,
-    context: { ...context, size },
-    actions: [{ type: 'SEND_TEXT', body: `Great — size ${size}. How many pieces would you like?` }],
+    nextState: ConversationState.AWAITING_NAME,
+    context: { ...context, size, qty: 1 },
+    actions: [{ type: 'SEND_TEXT', body: 'What name should we put on the order?' }],
   };
 }
 
@@ -720,24 +729,85 @@ function handleName(event: ChatEvent, context: OrderContext): TransitionResult {
     actions: [
       {
         type: 'SEND_TEXT',
-        body: 'Please share your full delivery address (house/flat, street, area).',
+        body: 'Please send your complete delivery address with house/flat, street/area, city, state and 6-digit pincode in one message.',
       },
     ],
   };
 }
 
-function handleAddress(event: ChatEvent, context: OrderContext): TransitionResult {
-  if (event.type !== 'TEXT' || event.body.trim().length < 8) {
-    return {
-      nextState: ConversationState.AWAITING_ADDRESS,
-      context,
-      actions: [{ type: 'SEND_TEXT', body: 'Address looks too short — please share the full delivery address.' }],
-    };
+export interface ParsedFullAddress {
+  address: string;
+  city: string;
+  state: string;
+  pincode: string;
+}
+
+/**
+ * Parse a single combined address reply into street/city/state/pincode.
+ * Returns null when no valid 6-digit pincode or enough detail is present.
+ */
+export function parseFullAddress(raw: string): ParsedFullAddress | null {
+  const text = raw.replace(/\s+/g, ' ').trim();
+  if (text.length < 10) return null;
+  const pincodeMatch = text.match(/\b(\d{6})\b/);
+  if (!pincodeMatch) return null;
+  const pincode = pincodeMatch[1] as string;
+
+  const withoutPincode = text.replace(pincode, '').replace(/,\s*$/, '').trim();
+  const parts = withoutPincode
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  let address = withoutPincode;
+  let city = '';
+  let state = '';
+  if (parts.length >= 3) {
+    state = parts[parts.length - 1] ?? '';
+    city = parts[parts.length - 2] ?? '';
+    address = parts.slice(0, parts.length - 2).join(', ');
+  } else if (parts.length === 2) {
+    address = parts[0] ?? '';
+    const tail = (parts[1] ?? '').split(/\s+/).filter(Boolean);
+    city = tail[0] ?? '';
+    state = tail.slice(1).join(' ') || city;
+  } else {
+    const tokens = withoutPincode.split(/\s+/).filter(Boolean);
+    city = tokens[tokens.length - 2] ?? tokens[0] ?? '';
+    state = tokens[tokens.length - 1] ?? city;
   }
+
+  if (!address || !city || !pincode) return null;
+  return { address: address.trim(), city: city.trim(), state: (state || city).trim(), pincode };
+}
+
+function handleAddress(event: ChatEvent, context: OrderContext): TransitionResult {
+  const reAsk: TransitionResult = {
+    nextState: ConversationState.AWAITING_ADDRESS,
+    context,
+    actions: [
+      {
+        type: 'SEND_TEXT',
+        body: 'Please send your complete delivery address with house/flat, street/area, city, state and 6-digit pincode in one message.',
+      },
+    ],
+  };
+  if (event.type !== 'TEXT') return reAsk;
+  const parsed = parseFullAddress(event.body);
+  if (!parsed) return reAsk;
+
+  // Address is complete — create the order (quantity is always 1).
   return {
-    nextState: ConversationState.AWAITING_PINCODE,
-    context: { ...context, address: event.body.trim() },
-    actions: [{ type: 'SEND_TEXT', body: 'And your city, state, and 6-digit pincode? (e.g. "Jaipur, Rajasthan 302001")' }],
+    nextState: ConversationState.AWAITING_PAYMENT,
+    context: {
+      ...context,
+      qty: 1,
+      address: parsed.address,
+      city: parsed.city,
+      state: parsed.state,
+      pincode: parsed.pincode,
+    },
+    actions: [{ type: 'CREATE_ORDER' }],
   };
 }
 

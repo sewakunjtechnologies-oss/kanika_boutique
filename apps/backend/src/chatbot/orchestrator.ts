@@ -175,6 +175,19 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
     return;
   }
 
+  // LATEST PHOTO WINS: a new product photo always starts a fresh matching flow
+  // and hard-resets any incomplete order in progress — EXCEPT while we are
+  // waiting for a payment screenshot, where an image is the payment proof, not
+  // a product photo (handled by the state machine below).
+  if (
+    event.type === 'IMAGE' &&
+    conv.state !== ConversationState.AWAITING_PAYMENT &&
+    conv.state !== ConversationState.AWAITING_VERIFICATION
+  ) {
+    await processInboundProductImage(input, event.mediaId, extractRequestedSize(event.caption ?? ''));
+    return;
+  }
+
   const catalogOptionsHandled = await handleCatalogOptionsIntent(input, conv, event);
   if (catalogOptionsHandled) return;
 
@@ -968,19 +981,15 @@ async function executeActions(
             physicalStock: stockCheck?.physicalStock ?? 0,
           });
           if (!stockCheck?.available) {
-            await sendText(
-              to,
-              `Sorry, the size ${result.context.size ?? ''} is currently out of stock. Let me show alternatives.`,
-            );
-            if (result.context.productId) {
-              queue.push({ type: 'SUGGEST_ALTERNATIVES', productId: result.context.productId });
-            }
+            // No alternatives, no product lists — just a neutral message.
+            await sendText(to, `Sorry, the size ${result.context.size ?? ''} is currently out of stock.`);
             result = { ...result, nextState: ConversationState.IDLE, context: {} };
             break;
           }
+          // WhatsApp orders are always exactly one piece — enforce quantity 1.
           const created = await createOrderFromContext({
             customerId: input.customerId,
-            ctx: result.context,
+            ctx: { ...result.context, qty: 1 },
           });
           if (!created) {
             await sendText(to, "Something went wrong creating your order. Please try again or type 'agent'.");
@@ -995,11 +1004,9 @@ async function executeActions(
               total: created.total,
             },
           };
-          const settings = await getBusinessSettings();
-          await sendText(
-            to,
-            `Order #${created.orderNumber} created!\n\nPlease send your payment of ₹${created.total} to UPI: ${settings.upiId}\n\nReply with a screenshot once done.`,
-          );
+          // Payment: send the shop QR image with the payable amount. No UPI ID,
+          // no follow-up message — stay silent until the screenshot arrives.
+          await sendPaymentQr(to, created.orderNumber, created.total);
           emitToDashboard('order_created', { orderId: created.orderId });
           break;
         }
@@ -1395,53 +1402,13 @@ async function askForNewProductAfterRejection(
   await sendText(input.customerWhatsappNumber, PRODUCT_REJECTED_MESSAGE);
 }
 
-async function rejectCandidateProductMatch(input: OrchestratorInput, ctx: OrderContext): Promise<void> {
-  const rejectedId = ctx.candidateProductId ?? ctx.productId;
-  const remainingCandidates = (ctx.candidateProductIds ?? []).filter((id) => id !== rejectedId).slice(0, 3);
-  const rejectedContext = rejectedProductContext({
-    ...ctx,
-    productId: rejectedId ?? ctx.productId,
-  });
-
+async function rejectCandidateProductMatch(input: OrchestratorInput, _ctx: OrderContext): Promise<void> {
+  // NO means silent: clear the candidate and wait for a new photo. Never send
+  // alternatives, product lists or any message.
   await prisma.conversation.update({
     where: { id: input.conversationId },
-    data: {
-      state: ConversationState.AWAITING_NEW_PRODUCT,
-      contextJson: compactOrderContext({
-        ...rejectedContext,
-        candidateProductId: undefined,
-        candidateProductName: undefined,
-        candidateProductSku: undefined,
-        candidateImageUrl: undefined,
-        candidateTopScore: undefined,
-        candidateSecondScore: undefined,
-        candidateScoreMargin: undefined,
-        candidateCreatedAt: undefined,
-        candidateProductIds: remainingCandidates,
-      }) as never,
-    },
+    data: { state: ConversationState.AWAITING_NEW_PRODUCT, contextJson: {} },
   });
-
-  if (remainingCandidates.length > 0) {
-    await sendInteractiveList(
-      input.customerWhatsappNumber,
-      "No problem. I won't continue with that product. These are the next closest matches. Pick one only if it is correct:",
-      'View matches',
-      [
-        {
-          title: 'Closest matches',
-          rows: remainingCandidates.map((productId, index) => ({
-            id: `match_${productId}`,
-            title: `Option ${index + 1}`,
-            description: 'Tap only if this is your product',
-          })),
-        },
-      ],
-    );
-    return;
-  }
-
-  await sendText(input.customerWhatsappNumber, PRODUCT_REJECTED_MESSAGE);
 }
 
 function isExpiredCandidateContext(ctx: OrderContext): boolean {
@@ -1484,51 +1451,17 @@ interface AvailableProductRow {
 async function sendAvailableProductsList(
   input: OrchestratorInput,
   ctx: OrderContext,
-  size: string | null,
+  _size: string | null,
 ): Promise<void> {
-  const excludedProductId = ctx.lastRejectedProductId ?? ctx.rejectedProductId ?? null;
-  const products = await findAvailableProductOptions({ size, excludedProductId, limit: 3 });
-
-  if (products.length === 0) {
-    if (size) {
-      await prisma.conversation.update({
-        where: { id: input.conversationId },
-        data: {
-          state: ConversationState.AWAITING_NEW_PRODUCT,
-          contextJson: {
-            ...rejectedProductContext(ctx),
-            availableProductOptions: [],
-            availableProductListShown: false,
-            availableProductListSize: size,
-          } as never,
-        },
-      });
-      await sendText(
-        input.customerWhatsappNumber,
-        `Sorry, I couldn't find available products in size ${size}. Would you like to see all available products or talk to the boutique team?`,
-      );
-      return;
-    }
-    await sendText(input.customerWhatsappNumber, 'Sorry, I could not find available products right now. Please send another product photo/article number or talk to the boutique team.');
-    return;
-  }
-
-  const header = size ? `Available products in size ${size}:` : 'Available products:';
-  const body = `${header}\n${formatAvailableProductList(products)}\n\nReply with the product number to continue.`;
+  // Approved policy: never send numbered product lists, alternatives or
+  // "Reply with the product number". Stay silent and wait for a new photo.
   await prisma.conversation.update({
     where: { id: input.conversationId },
     data: {
       state: ConversationState.AWAITING_NEW_PRODUCT,
-      intent: Intent.ORDER_INTENT,
-      contextJson: {
-        ...rejectedProductContext(ctx),
-        availableProductOptions: products.map((product) => product.id),
-        availableProductListShown: true,
-        ...(size ? { availableProductListSize: size } : {}),
-      } as never,
+      contextJson: compactOrderContext(rejectedProductContext(ctx)) as never,
     },
   });
-  await sendText(input.customerWhatsappNumber, body);
 }
 
 export function formatAvailableProductList(products: AvailableProductOption[]): string {
@@ -1655,88 +1588,59 @@ async function respondToProductMatchOutcome(
   outcome: ProductMatchOutcome | null,
   requestedSize: string | null,
   sourceMediaId: string | null = null,
+  flowVersion?: number,
 ): Promise<void> {
-  const threshold = env.IMAGE_AUTO_MATCH_THRESHOLD;
-  const candidateThreshold = env.IMAGE_CANDIDATE_MATCH_THRESHOLD;
-  const requiredMargin = env.IMAGE_MIN_SCORE_MARGIN;
-  const score = outcome?.confidence ?? 0;
-  const matchedProductId = outcome?.matchedProductId ?? null;
-  const bestSecondMargin = outcome?.bestSecondMargin ?? null;
-  const hasClearBestMatch = bestSecondMargin === null || bestSecondMargin >= requiredMargin;
+  const threshold = env.IMAGE_AUTO_MATCH_THRESHOLD; // single confirm-first threshold (0.50)
+  // Use the top-scoring DISTINCT inventory product only.
+  const top = outcome?.candidates?.[0] ?? null;
+  const score = top?.confidence ?? outcome?.confidence ?? 0;
 
-  // AUTO_MATCH: confident, unambiguous single match. Reply with availability.
-  if (
-    matchedProductId &&
-    outcome?.decision === 'auto_match' &&
-    outcome.meetsThreshold &&
-    score >= threshold &&
-    hasClearBestMatch
-  ) {
-    logImageMatchDecision(input, outcome, 'MATCHED', 'confident_unambiguous_match');
-    await beginOrderFromProduct(
-      input,
-      matchedProductId,
-      requestedSize,
-      sourceMediaId ? { lastMatchedImageMediaId: sourceMediaId } : {},
-    );
-    return;
+  // Confirm-first: any top distinct product at/above threshold is sent to the
+  // customer as a photo + YES/NO. No alternatives, no lists, no auto-order.
+  if (top && score >= threshold) {
+    const sent = await askCandidateProductMatchConfirmation(input, top, requestedSize, sourceMediaId, flowVersion);
+    if (sent) {
+      logImageMatchDecision(input, outcome, 'MATCHED', 'confirm_first_candidate');
+      return;
+    }
   }
 
-  // CANDIDATE_MATCH: score in the candidate band. Ask the customer to confirm
-  // the likely inventory product with exactly one message.
-  if (matchedProductId && outcome?.decision === 'candidate_confirmation') {
-    const sent = await askCandidateProductMatchConfirmation(input, outcome, requestedSize, sourceMediaId);
-    if (sent) return;
-  }
-
-  // NO_MATCH / matcher failure / empty inventory: send nothing.
-  const reason =
-    score < candidateThreshold
-      ? 'below_candidate_threshold'
-      : score < threshold
-        ? 'below_auto_threshold'
-        : !hasClearBestMatch
-          ? 'ambiguous_margin'
-          : 'no_confident_match';
-  logImageMatchDecision(input, outcome, 'SILENT_NO_MATCH', reason);
+  // Below 0.50 / no candidate / inactive product: send absolutely nothing.
+  logImageMatchDecision(input, outcome, 'SILENT_NO_MATCH', score < threshold ? 'below_threshold' : 'no_active_candidate');
   emitToDashboard('image_unmatched', {
     conversationId: input.conversationId,
     score,
-    hasCandidate: Boolean(matchedProductId),
+    hasCandidate: Boolean(top),
   });
   // Intentionally send nothing.
 }
 
 /**
- * CANDIDATE_MATCH responder. Sends exactly one message — the inventory image
- * (or a button prompt when no image is available) asking the customer to
- * confirm. Returns true when a confirmation was sent, false to fall through to
- * the silent branch (e.g. the candidate product is missing or inactive).
+ * Sends the single minimal candidate-confirmation message: the matched inventory
+ * product photo with a neutral "Confirm product" body and YES/NO buttons. No
+ * description, stock, scores, alternatives or product lists. Returns false (to
+ * stay silent) when the product is missing/inactive or the flow went stale.
  */
 async function askCandidateProductMatchConfirmation(
   input: OrchestratorInput,
-  outcome: ProductMatchOutcome,
+  candidate: ProductMatchCandidate,
   requestedSize: string | null,
   sourceMediaId: string | null,
+  flowVersion?: number,
 ): Promise<boolean> {
-  const candidate =
-    outcome.candidates.find((item) => item.productId === outcome.matchedProductId) ?? outcome.candidates[0];
-  if (!candidate) return false;
-
   const availability = await getProductAvailability(candidate.productId);
   if (!availability || !availability.isActive) return false;
 
   const availableSizes = availability.variants.filter((v) => v.stock > 0).map((v) => v.size);
   const candidateContext: OrderContext = compactOrderContext({
+    activeFlowVersion: flowVersion,
+    activeMediaId: sourceMediaId ?? undefined,
     candidateProductId: candidate.productId,
     candidateProductName: availability.name || candidate.name,
     candidateProductSku: availability.sku || candidate.sku,
-    candidateImageUrl: candidate.imageUrl,
+    candidateImageUrl: availability.imageUrl ?? candidate.imageUrl,
     candidateTopScore: candidate.confidence,
-    candidateSecondScore: outcome.candidates[1]?.confidence ?? undefined,
-    candidateScoreMargin: outcome.bestSecondMargin ?? undefined,
     candidateCreatedAt: new Date().toISOString(),
-    candidateProductIds: outcome.candidates.map((item) => item.productId).slice(0, 5),
     requestedSize: requestedSize ?? undefined,
     availableSizes,
     lastMatchedImageMediaId: sourceMediaId ?? undefined,
@@ -1755,25 +1659,22 @@ async function askCandidateProductMatchConfirmation(
     },
   });
 
-  // Exactly one customer-facing message.
-  const question = 'I found a possible match. Is this the same product? Reply YES or NO.';
-  const imageLink = toPublicImageLink(candidate.imageUrl);
-  if (imageLink) {
-    await sendImage(input.customerWhatsappNumber, { link: imageLink }, question);
-  } else {
-    await sendInteractiveButtons(input.customerWhatsappNumber, 'I found a possible match. Is this the same product?', [
-      { id: 'product_confirm_yes', title: 'Yes' },
-      { id: 'product_confirm_no', title: 'No' },
-    ]);
-  }
+  // One message: inventory photo header + minimal neutral body + YES/NO only.
+  const imageLink = toPublicImageLink(availability.imageUrl ?? candidate.imageUrl);
+  await sendInteractiveButtons(
+    input.customerWhatsappNumber,
+    'Confirm product',
+    [
+      { id: 'product_confirm_yes', title: 'YES' },
+      { id: 'product_confirm_no', title: 'NO' },
+    ],
+    imageLink ? { headerImageUrl: imageLink } : {},
+  );
 
-  logImageMatchDecision(input, outcome, 'MATCHED', 'candidate_confirmation');
   emitToDashboard('image_match_candidate', {
     conversationId: input.conversationId,
     productId: candidate.productId,
     score: candidate.confidence,
-    secondScore: outcome.candidates[1]?.confidence ?? null,
-    margin: outcome.bestSecondMargin,
   });
   return true;
 }
@@ -1796,7 +1697,10 @@ async function beginOrderFromProduct(
     productId: availability.id,
     productName: availability.name,
     productPrice: Number(availability.basePrice),
+    qty: 1,
     availableSizes,
+    ...(previousContext.activeFlowVersion !== undefined ? { activeFlowVersion: previousContext.activeFlowVersion } : {}),
+    ...(previousContext.activeMediaId ? { activeMediaId: previousContext.activeMediaId } : {}),
     ...(previousContext.lastMatchedImageMediaId
       ? { lastMatchedImageMediaId: previousContext.lastMatchedImageMediaId }
       : {}),
@@ -1805,45 +1709,14 @@ async function beginOrderFromProduct(
     productRejected: false,
   };
 
-  botLog('STOCK_CHECKED', {
-    productId,
-    requestedSize,
-    totalStock: availableVariants.reduce((sum, v) => sum + v.stock, 0),
-    stockBySize: availability.variants.map((v) => ({
-      size: v.size,
-      stock: v.stock,
-      reserved: v.reserved,
-      physicalStock: v.physicalStock,
-    })),
-  });
   logger.info(
-    {
-      conversationId: input.conversationId,
-      productId,
-      inStock: availableSizes.length > 0,
-      availableSizes,
-    },
+    { conversationId: input.conversationId, productId, inStock: availableSizes.length > 0, availableSizes },
     'availability reply sent',
   );
 
+  // Out of stock: one neutral message, no alternatives.
   if (availableSizes.length === 0) {
-    await sendText(
-      input.customerWhatsappNumber,
-      `Sorry, ${availability.name} is currently out of stock. Let me show similar available pieces.`,
-    );
-    const alts = await suggestAlternatives(productId);
-    if (alts.length > 0) {
-      await sendInteractiveList(input.customerWhatsappNumber, 'These are similar items in stock:', 'Pick one', [
-        {
-          title: 'Alternatives',
-          rows: alts.map((a) => ({
-            id: `alt_${a.id}`,
-            title: a.name.slice(0, 24),
-            description: `₹${a.basePrice}`,
-          })),
-        },
-      ]);
-    }
+    await sendText(input.customerWhatsappNumber, `Sorry, ${availability.name} is currently out of stock.`);
     await prisma.conversation.update({
       where: { id: input.conversationId },
       data: { state: ConversationState.IDLE, contextJson: {} },
@@ -1851,51 +1724,24 @@ async function beginOrderFromProduct(
     return;
   }
 
-  if (requestedSize) {
-    const variant = availableVariants.find((v) => sameSize(v.size, requestedSize));
-    if (variant) {
-      await prisma.conversation.update({
-        where: { id: input.conversationId },
-        data: {
-          state: ConversationState.AWAITING_QTY,
-          contextJson: { ...baseContext, size: variant.size } as never,
-        },
-      });
-      await sendText(
-        input.customerWhatsappNumber,
-        `Yes — ${availability.name} is available in size ${variant.size}.\nPrice: ₹${availability.basePrice}\nAvailable stock: ${variant.stock} pc${variant.stock === 1 ? '' : 's'}.\nHow many pieces would you like?`,
-      );
-      return;
-    }
-
-    await prisma.conversation.update({
-      where: { id: input.conversationId },
-      data: {
-        state: ConversationState.AWAITING_SIZE,
-        contextJson: baseContext as never,
-      },
-    });
-    await sendSizePicker(
-      input.customerWhatsappNumber,
-      `Sorry, size ${requestedSize} is not available for ${availability.name}. Available sizes: ${availableSizes.join(', ')}.`,
-      availableSizes,
-    );
-    return;
-  }
-
   await prisma.conversation.update({
     where: { id: input.conversationId },
-    data: {
-      state: ConversationState.AWAITING_SIZE,
-      contextJson: baseContext as never,
-    },
+    data: { state: ConversationState.AWAITING_SIZE, contextJson: baseContext as never },
   });
-  const stockText = availableVariants.map((v) => `${v.size}: ${v.stock} pc${v.stock === 1 ? '' : 's'}`).join(', ');
-  await sendSizePicker(
-    input.customerWhatsappNumber,
-    `Yes, available.\n${availability.name}\nPrice: ₹${availability.basePrice}\nStock by size: ${stockText}\nPlease choose your size.`,
-    availableSizes,
-  );
+
+  // Availability message — NO stock counts. Optionally lead with the inventory image.
+  const availabilityText =
+    `Available\n\n${availability.name}\n` +
+    `Article: ${availability.sku}\n` +
+    `Price: ₹${availability.basePrice}\n` +
+    `Available sizes: ${availableSizes.join(', ')}`;
+  const imageLink = toPublicImageLink(availability.imageUrl);
+  if (imageLink) {
+    await sendImage(input.customerWhatsappNumber, { link: imageLink }, availabilityText);
+    await sendSizePicker(input.customerWhatsappNumber, 'Please choose your size.', availableSizes);
+  } else {
+    await sendSizePicker(input.customerWhatsappNumber, `${availabilityText}\n\nPlease choose your size.`, availableSizes);
+  }
 }
 
 async function buildFaqAnswer(
@@ -1997,6 +1843,18 @@ async function repeatCurrentPrompt(
     case ConversationState.ABANDONED:
       return;
   }
+}
+
+async function sendPaymentQr(to: string, orderNumber: string, total: number | string): Promise<void> {
+  const caption = `Order #${orderNumber}\nAmount to pay: ₹${total}\n\nPlease send the payment screenshot once paid.`;
+  const qrUrl = env.PAYMENT_QR_IMAGE_URL;
+  if (qrUrl) {
+    await sendImage(to, { link: qrUrl }, caption);
+    return;
+  }
+  // QR not configured — send only the payable amount. Never send the UPI ID.
+  logger.warn('PAYMENT_QR_IMAGE_URL not set — sending amount text without QR image');
+  await sendText(to, caption);
 }
 
 async function sendSizePicker(to: string, body: string, sizes: string[]): Promise<void> {
@@ -2130,14 +1988,59 @@ async function processInboundProductImage(
   mediaId: string,
   requestedSize: string | null,
 ): Promise<void> {
-  // Never send any acknowledgement before matching completes. A photo produces
-  // at most one customer-facing reply, and only on a confident match.
+  // A new product photo is a HARD RESET of any incomplete shopping flow. We bump
+  // the flow version and clear all prior product/order-in-progress state in one
+  // transaction so the latest photo always wins. Completed orders are untouched.
+  const flowVersion = await startFreshImageFlow(input, mediaId);
+
+  // Never send any acknowledgement before matching completes.
   if (!(await hasSearchableInventoryImages())) {
     logImageMatchDecision(input, null, 'SILENT_NO_MATCH', 'inventory_index_empty');
     return;
   }
   const outcome = await runProductMatchOutcome(mediaId);
-  await respondToProductMatchOutcome(input, outcome, requestedSize, mediaId);
+
+  // Latest-message-wins: if a newer customer message arrived while we matched,
+  // discard this (possibly slow) result and send nothing.
+  if (await isFlowStale(input.conversationId, flowVersion, mediaId)) {
+    logImageMatchDecision(input, outcome, 'SILENT_NO_MATCH', 'stale_flow_discarded');
+    return;
+  }
+  await respondToProductMatchOutcome(input, outcome, requestedSize, mediaId, flowVersion);
+}
+
+/**
+ * Hard reset for a new product photo: clears matched/candidate product, size,
+ * quantity, name, address, payment-pending and all suggestions, and bumps the
+ * flow version. Returns the new flow version. Persisted in one update.
+ */
+async function startFreshImageFlow(input: OrchestratorInput, mediaId: string): Promise<number> {
+  const conv = await prisma.conversation.findUnique({ where: { id: input.conversationId } });
+  const prev = readOrderContext(conv?.contextJson);
+  const flowVersion = (prev.activeFlowVersion ?? 0) + 1;
+  const freshContext: OrderContext = {
+    activeFlowVersion: flowVersion,
+    activeMediaId: mediaId,
+    latestInboundMessageId: input.message.id,
+    lastMatchedImageMediaId: mediaId,
+  };
+  await prisma.conversation.update({
+    where: { id: input.conversationId },
+    data: { state: ConversationState.AWAITING_PRODUCT_CONFIRMATION, contextJson: freshContext as never },
+  });
+  return flowVersion;
+}
+
+/**
+ * True when a newer flow has started (newer photo/message) or the active media
+ * no longer matches — meaning this async result must be discarded.
+ */
+async function isFlowStale(conversationId: string, flowVersion: number, mediaId: string): Promise<boolean> {
+  const conv = await prisma.conversation.findUnique({ where: { id: conversationId } });
+  const ctx = readOrderContext(conv?.contextJson);
+  if ((ctx.activeFlowVersion ?? 0) !== flowVersion) return true;
+  if (ctx.activeMediaId && ctx.activeMediaId !== mediaId) return true;
+  return false;
 }
 
 /**

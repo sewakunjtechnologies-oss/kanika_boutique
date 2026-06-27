@@ -133,12 +133,18 @@ export async function rankImageMatches(
 }
 
 function normalizedSharp(buffer: Buffer): sharp.Sharp {
-  // Keep the full garment visible: normalize EXIF orientation, flatten alpha to white,
-  // convert to RGB, and use contain-padding in downstream resizes instead of stretch/crop.
+  // Identical normalization for BOTH the customer photo and inventory images so
+  // an exact image survives WhatsApp re-compression/exposure shifts:
+  //  - .rotate(): apply EXIF orientation then strip metadata
+  //  - .flatten(): composite any alpha onto white
+  //  - .toColourspace('srgb'): consistent RGB
+  //  - .normalise(): moderate brightness/contrast stretch
+  // Downstream resizes use fit:'contain' (pad, never stretch/crop).
   return sharp(buffer, { failOn: 'none' })
     .rotate()
     .flatten({ background: HASH_BACKGROUND })
-    .toColourspace('srgb');
+    .toColourspace('srgb')
+    .normalise();
 }
 
 function distinctBestProductScores(scores: ImageMatchScore[]): ImageMatchScore[] {

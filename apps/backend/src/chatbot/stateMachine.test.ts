@@ -5,6 +5,7 @@ import {
   NEW_PRODUCT_REQUEST_MESSAGE,
   PRODUCT_FIRST_MESSAGE,
   PRODUCT_REJECTED_MESSAGE,
+  parseFullAddress,
   transition,
   type OrderContext,
 } from './stateMachine';
@@ -33,14 +34,18 @@ describe('stateMachine', () => {
     expect(['SEND_BUTTONS', 'SEND_LIST']).toContain(r.actions[0]?.type);
   });
 
-  test('AWAITING_SIZE + button reply → AWAITING_QTY with size in context', () => {
+  test('AWAITING_SIZE + button reply → AWAITING_NAME with size + qty=1 (no quantity question)', () => {
     const r = transition(
       ConversationState.AWAITING_SIZE,
       { type: 'BUTTON_REPLY', id: 'size_M', title: 'M' },
       { productId: 'prod123' },
     );
-    expect(r.nextState).toBe(ConversationState.AWAITING_QTY);
+    expect(r.nextState).toBe(ConversationState.AWAITING_NAME);
     expect(r.context.size).toBe('M');
+    expect(r.context.qty).toBe(1);
+    const body = r.actions.map((a) => (a.type === 'SEND_TEXT' ? a.body : '')).join(' ');
+    expect(body).not.toMatch(/how many/i);
+    expect(body).toMatch(/name/i);
   });
 
   test('AWAITING_QTY + valid number → AWAITING_NAME', () => {
@@ -83,6 +88,20 @@ describe('stateMachine', () => {
     expect(r.actions[0]?.type).toBe('SEND_TEXT');
   });
 
+  test('18: parseFullAddress extracts street, city, state and 6-digit pincode', () => {
+    const parsed = parseFullAddress('H-12, Sector 5 Vaishali Nagar, Jaipur, Rajasthan 302021');
+    expect(parsed).not.toBeNull();
+    expect(parsed?.city).toBe('Jaipur');
+    expect(parsed?.state).toBe('Rajasthan');
+    expect(parsed?.pincode).toBe('302021');
+    expect(parsed?.address).toContain('H-12');
+  });
+
+  test('18b: parseFullAddress returns null without a 6-digit pincode', () => {
+    expect(parseFullAddress('H-12, Sector 5, Jaipur, Rajasthan')).toBeNull();
+    expect(parseFullAddress('short')).toBeNull();
+  });
+
   test('full happy path IDLE → ... → CREATE_ORDER', () => {
     let state: ConversationState = ConversationState.IDLE;
     let ctx: OrderContext = {};
@@ -102,35 +121,32 @@ describe('stateMachine', () => {
     ctx = r.context;
     expect(state).toBe(ConversationState.AWAITING_SIZE);
 
-    // Size picked
+    // Size picked → straight to name, quantity fixed to 1 (no quantity step)
     r = transition(state, { type: 'BUTTON_REPLY', id: 'size_L', title: 'L' }, ctx);
     state = r.nextState;
     ctx = r.context;
-    expect(state).toBe(ConversationState.AWAITING_QTY);
-
-    // Qty
-    r = transition(state, { type: 'TEXT', body: '1' }, ctx);
-    state = r.nextState;
-    ctx = r.context;
     expect(state).toBe(ConversationState.AWAITING_NAME);
+    expect(ctx.qty).toBe(1);
 
-    // Name
+    // Name → one combined full-address question
     r = transition(state, { type: 'TEXT', body: 'Anita Sharma' }, ctx);
     state = r.nextState;
     ctx = r.context;
     expect(state).toBe(ConversationState.AWAITING_ADDRESS);
 
-    // Address
-    r = transition(state, { type: 'TEXT', body: 'H-12, Sector 5, Vaishali Nagar' }, ctx);
-    state = r.nextState;
-    ctx = r.context;
-    expect(state).toBe(ConversationState.AWAITING_PINCODE);
-
-    // Pincode + city + state
-    r = transition(state, { type: 'TEXT', body: 'Jaipur, Rajasthan 302021' }, ctx);
+    // One combined address reply → parse + CREATE_ORDER
+    r = transition(
+      state,
+      { type: 'TEXT', body: 'H-12, Sector 5, Vaishali Nagar, Jaipur, Rajasthan 302021' },
+      ctx,
+    );
     state = r.nextState;
     ctx = r.context;
     expect(state).toBe(ConversationState.AWAITING_PAYMENT);
+    expect(ctx.city).toBe('Jaipur');
+    expect(ctx.state).toBe('Rajasthan');
+    expect(ctx.pincode).toBe('302021');
+    expect(ctx.qty).toBe(1);
     expect(r.actions[0]?.type).toBe('CREATE_ORDER');
   });
 

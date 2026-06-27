@@ -1,29 +1,8 @@
-import { ConversationState, prisma } from '@kda/db';
+import { prisma } from '@kda/db';
 import { env } from '../config/env';
 import { logger } from '../logger';
 import { emitToDashboard } from '../realtime/io';
 import { sendText } from '../whatsapp/client';
-
-export const SUPPORT_NUDGE_MESSAGE = [
-  'Need help completing your order?',
-  '',
-  'Agar aap order complete nahi kar paa rahe hain, boutique team aapki help kar sakti hai.',
-  '',
-  'You can call us or we can call you.',
-  'Reply CALL for callback or HELP for support.',
-].join('\n');
-
-const WAITING_STATES: ConversationState[] = [
-  ConversationState.AWAITING_PRODUCT_CONFIRMATION,
-  ConversationState.AWAITING_NEW_PRODUCT,
-  ConversationState.AWAITING_SIZE,
-  ConversationState.AWAITING_QTY,
-  ConversationState.AWAITING_NAME,
-  ConversationState.AWAITING_ADDRESS,
-  ConversationState.AWAITING_PINCODE,
-  ConversationState.AWAITING_PAYMENT,
-  ConversationState.AWAITING_VERIFICATION,
-];
 
 export function isSupportReply(text: string): 'CALL' | 'HELP' | null {
   const normalized = text.trim().toUpperCase();
@@ -32,42 +11,14 @@ export function isSupportReply(text: string): 'CALL' | 'HELP' | null {
   return null;
 }
 
-export async function sendDueSupportNudges(now: Date = new Date()): Promise<number> {
-  const cutoff = new Date(now.getTime() - env.SUPPORT_NUDGE_DELAY_MINUTES * 60 * 1000);
-  const candidates = await prisma.conversation.findMany({
-    where: {
-      state: { in: WAITING_STATES },
-      humanTakeover: false,
-      supportNudgeSentAt: null,
-      lastOutboundAt: { lte: cutoff },
-    },
-    include: { customer: { select: { whatsappNumber: true } } },
-    take: 100,
-  });
-
-  let sent = 0;
-  for (const conv of candidates) {
-    if (
-      !shouldSendSupportNudge({
-        lastInboundAt: conv.lastInboundAt,
-        lastOutboundAt: conv.lastOutboundAt,
-        supportNudgeSentAt: conv.supportNudgeSentAt,
-        now,
-        delayMinutes: env.SUPPORT_NUDGE_DELAY_MINUTES,
-      })
-    ) continue;
-    await prisma.conversation.update({
-      where: { id: conv.id },
-      data: { supportNudgeSentAt: now },
-    });
-    try {
-      const outcome = await sendText(conv.customer.whatsappNumber, SUPPORT_NUDGE_MESSAGE);
-      if (outcome.ok) sent += 1;
-    } catch (err) {
-      logger.warn({ err, conversationId: conv.id }, 'support nudge send failed');
-    }
-  }
-  return sent;
+/**
+ * Automated support follow-up is DISABLED. Per the approved policy the bot stays
+ * silent after sending payment instructions until the customer replies — it must
+ * never send a delayed Hindi/English "need help / Reply CALL / Reply HELP" nudge.
+ * Kept as a no-op so the queue scheduler call site stays valid.
+ */
+export async function sendDueSupportNudges(_now: Date = new Date()): Promise<number> {
+  return 0;
 }
 
 export function shouldSendSupportNudge(input: {

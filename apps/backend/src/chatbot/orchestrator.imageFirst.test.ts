@@ -24,7 +24,12 @@ vi.mock('@kda/db', () => {
     prisma: {
       conversation: {
         findUnique: vi.fn(async () => conv),
-        update: vi.fn(async () => conv),
+        // Mutate the shared conv so flow-version checks see persisted state.
+        update: vi.fn(async ({ data }: { data: { state?: string; contextJson?: unknown } }) => {
+          if (data.state) conv.state = data.state;
+          if ('contextJson' in data) conv.contextJson = (data.contextJson ?? {}) as Record<string, unknown>;
+          return conv;
+        }),
         findFirst: vi.fn(async () => null),
         findMany: vi.fn(async () => []),
       },
@@ -107,7 +112,7 @@ vi.mock('./orderService', () => ({
 import { prisma } from '@kda/db';
 import { sendText, sendImage, sendInteractiveButtons, sendInteractiveList, downloadMedia, downloadMediaToBuffer } from '../whatsapp/client';
 import { matchProduct } from '../ai/productMatcher';
-import { getProductAvailability, createOrderFromContext } from './orderService';
+import { getProductAvailability, createOrderFromContext, checkStock } from './orderService';
 import { emitToDashboard } from '../realtime/io';
 import { handleInboundMessage } from './orchestrator';
 
@@ -176,9 +181,9 @@ beforeEach(() => {
   vi.mocked(getProductAvailability).mockReset();
   vi.mocked(createOrderFromContext).mockReset();
   vi.mocked(emitToDashboard).mockClear();
-  // Production policy thresholds.
-  env.IMAGE_AUTO_MATCH_THRESHOLD = 0.65;
-  env.IMAGE_CANDIDATE_MATCH_THRESHOLD = 0.45;
+  // Single confirm-first threshold.
+  env.IMAGE_AUTO_MATCH_THRESHOLD = 0.5;
+  env.IMAGE_CANDIDATE_MATCH_THRESHOLD = 0.5;
   env.IMAGE_MIN_SCORE_MARGIN = 0.08;
   env.REPLY_ON_UNMATCHED_IMAGE = false;
   // Force deterministic intent classification (no live Gemini calls in tests).
@@ -190,169 +195,121 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-const noMatchOutcome = {
-  matchedProductId: null,
-  confidence: 0,
-  confidenceBand: 'low',
-  candidates: [],
-  reasoning: 'no match',
-  meetsThreshold: false,
-  decision: 'no_match',
-  bestSecondMargin: null,
-};
+function outcome(score: number, imageUrl = 'https://cdn.test/p1.jpg') {
+  return {
+    matchedProductId: score >= 0.5 ? 'p1' : null,
+    confidence: score,
+    confidenceBand: 'high',
+    candidates: [{ productId: 'p1', sku: 'SKU1', name: 'Blue Suit', imageUrl, confidence: score }],
+    reasoning: 'match',
+    meetsThreshold: score >= 0.5,
+    decision: score >= 0.5 ? 'candidate_confirmation' : 'no_match',
+    bestSecondMargin: 1,
+  };
+}
 
-const confidentOutcome = {
-  matchedProductId: 'p1',
-  confidence: 0.95,
-  confidenceBand: 'high',
-  candidates: [{ productId: 'p1', sku: 'SKU1', name: 'Blue Suit', imageUrl: '', confidence: 0.95 }],
-  reasoning: 'strong match',
-  meetsThreshold: true,
-  decision: 'auto_match',
-  bestSecondMargin: 1,
-};
+const noMatchOutcome = outcome(0, '');
 
-describe('image-first silent-match policy', () => {
-  test('1: image never triggers an immediate "Let me check" acknowledgement', async () => {
-    vi.mocked(matchProduct).mockResolvedValue(confidentOutcome as never);
-    vi.mocked(getProductAvailability).mockResolvedValue({
-      id: 'p1',
-      name: 'Blue Suit',
-      basePrice: '1500',
-      isActive: true,
-      variants: [{ size: '38', stock: 2, reserved: 0, physicalStock: 2 }],
-    } as never);
+function availability(sizes: Array<{ size: string; stock: number }>) {
+  return {
+    id: 'p1',
+    sku: 'SKU1',
+    name: 'Blue Suit',
+    basePrice: '1760',
+    imageUrl: '/uploads/p1.jpg',
+    isActive: true,
+    variants: sizes.map((s) => ({ ...s, reserved: 0, physicalStock: s.stock })),
+  };
+}
+
+describe('confirm-first image matching', () => {
+  test('8: score below 0.50 → zero responses, no order', async () => {
+    vi.mocked(matchProduct).mockResolvedValue(outcome(0.49) as never);
 
     await handleInboundMessage(imageInput as never);
 
-    expect(allSentText().toLowerCase()).not.toContain('let me check');
-    expect(allSentText().toLowerCase()).not.toContain('please wait while i check');
-  });
-
-  test('2 + 7: confident match → exactly one reply, after reading current stock', async () => {
-    vi.mocked(matchProduct).mockResolvedValue(confidentOutcome as never);
-    vi.mocked(getProductAvailability).mockResolvedValue({
-      id: 'p1',
-      name: 'Blue Suit',
-      basePrice: '1500',
-      isActive: true,
-      variants: [
-        { size: '38', stock: 2, reserved: 0, physicalStock: 2 },
-        { size: '40', stock: 1, reserved: 0, physicalStock: 1 },
-        { size: '42', stock: 3, reserved: 0, physicalStock: 3 },
-      ],
-    } as never);
-
-    await handleInboundMessage(imageInput as never);
-
-    expect(getProductAvailability).toHaveBeenCalledWith('p1'); // checks current stock
-    expect(customerReplyCount()).toBe(1); // exactly one customer-facing response
-    const reply = allSentText();
-    expect(reply.toLowerCase()).toContain('available');
-    expect(reply).toContain('38');
-    expect(reply).toContain('40');
-    expect(reply).toContain('42');
-    expect(createOrderFromContext).not.toHaveBeenCalled();
-  });
-
-  test('11: unmatched image → zero responses, no order, dashboard signalled', async () => {
-    vi.mocked(matchProduct).mockResolvedValue(noMatchOutcome as never);
-
-    await expect(handleInboundMessage(imageInput as never)).resolves.toBeUndefined();
-
-    expect(downloadMediaToBuffer).toHaveBeenCalled(); // image WAS processed in memory
+    expect(downloadMediaToBuffer).toHaveBeenCalled();
     expect(customerReplyCount()).toBe(0);
     expect(createOrderFromContext).not.toHaveBeenCalled();
+  });
+
+  test('9 + 10 + 13: score >= 0.50 → exactly one candidate image + YES/NO, no lists/stock', async () => {
+    vi.mocked(matchProduct).mockResolvedValue(outcome(0.5) as never);
+    vi.mocked(getProductAvailability).mockResolvedValue(availability([{ size: '40', stock: 2 }]) as never);
+
+    await handleInboundMessage(imageInput as never);
+
+    expect(customerReplyCount()).toBe(1);
+    // One interactive button message: minimal body + YES/NO + image header.
+    expect(sendInteractiveButtons).toHaveBeenCalledWith(
+      '919999999999',
+      'Confirm product',
+      [
+        { id: 'product_confirm_yes', title: 'YES' },
+        { id: 'product_confirm_no', title: 'NO' },
+      ],
+      expect.objectContaining({ headerImageUrl: expect.stringContaining('p1.jpg') }),
+    );
+    // No alternative product list, no stock counts, no extra description.
+    expect(sendInteractiveList).not.toHaveBeenCalled();
+    expect(allSentText()).not.toMatch(/pcs|stock|possible match|available products/i);
+    expect(createOrderFromContext).not.toHaveBeenCalled();
+  });
+
+  test('8b: unmatched image emits dashboard signal but sends nothing', async () => {
+    vi.mocked(matchProduct).mockResolvedValue(noMatchOutcome as never);
+
+    await handleInboundMessage(imageInput as never);
+
+    expect(customerReplyCount()).toBe(0);
     expect(emitToDashboard).toHaveBeenCalledWith('image_unmatched', expect.objectContaining({ conversationId: 'conv1' }));
   });
 
-  test('10a: candidate match (with inventory image) → exactly one confirmation reply', async () => {
-    vi.mocked(matchProduct).mockResolvedValue({
-      matchedProductId: 'p1',
-      confidence: 0.55,
-      confidenceBand: 'medium',
-      candidates: [{ productId: 'p1', sku: 'SKU1', name: 'Suit', imageUrl: 'https://cdn.test/suit.jpg', confidence: 0.55 }],
-      reasoning: 'candidate match',
-      meetsThreshold: false,
-      decision: 'candidate_confirmation',
-      bestSecondMargin: 1,
-    } as never);
-    vi.mocked(getProductAvailability).mockResolvedValue({
-      id: 'p1',
-      sku: 'SKU1',
-      name: 'Suit',
-      basePrice: '1500',
-      isActive: true,
-      variants: [{ size: '40', stock: 2, reserved: 0, physicalStock: 2 }],
-    } as never);
-
-    await handleInboundMessage(imageInput as never);
-
-    expect(customerReplyCount()).toBe(1);
-    expect(sendImage).toHaveBeenCalledWith(
-      '919999999999',
-      { link: 'https://cdn.test/suit.jpg' },
-      expect.stringContaining('possible match'),
-    );
-    expect(createOrderFromContext).not.toHaveBeenCalled();
-  });
-
-  test('10b: candidate match without inventory image → one button confirmation reply', async () => {
-    vi.mocked(matchProduct).mockResolvedValue({
-      matchedProductId: 'p1',
-      confidence: 0.95,
-      confidenceBand: 'high',
-      candidates: [
-        { productId: 'p1', sku: 'SKU1', name: 'Blue Suit', imageUrl: '', confidence: 0.95 },
-        { productId: 'p2', sku: 'SKU2', name: 'Similar Blue Suit', imageUrl: '', confidence: 0.93 },
-      ],
-      reasoning: 'ambiguous match',
-      meetsThreshold: true,
-      decision: 'candidate_confirmation',
-      bestSecondMargin: 0.02,
-    } as never);
-    vi.mocked(getProductAvailability).mockResolvedValue({
-      id: 'p1',
-      sku: 'SKU1',
-      name: 'Blue Suit',
-      basePrice: '1500',
-      isActive: true,
-      variants: [{ size: '40', stock: 2, reserved: 0, physicalStock: 2 }],
-    } as never);
-
-    await handleInboundMessage(imageInput as never);
-
-    expect(customerReplyCount()).toBe(1);
-    expect(sendInteractiveButtons).toHaveBeenCalledWith(
-      '919999999999',
-      expect.stringContaining('possible match'),
-      expect.arrayContaining([{ id: 'product_confirm_yes', title: 'Yes' }]),
-    );
-    expect(createOrderFromContext).not.toHaveBeenCalled();
-  });
-
-  test('12: download failure → zero responses (matcher returns null)', async () => {
+  test('12: download failure → zero responses', async () => {
     vi.mocked(downloadMediaToBuffer).mockRejectedValueOnce(new Error('non_image_content_type'));
 
     await handleInboundMessage(imageInput as never);
 
     expect(customerReplyCount()).toBe(0);
-    expect(createOrderFromContext).not.toHaveBeenCalled();
   });
 
-  test('confident match but zero stock still replies (out of stock)', async () => {
-    vi.mocked(matchProduct).mockResolvedValue(confidentOutcome as never);
-    vi.mocked(getProductAvailability).mockResolvedValue({
-      id: 'p1',
-      name: 'Blue Suit',
-      basePrice: '1500',
-      isActive: true,
-      variants: [{ size: '38', stock: 0, reserved: 0, physicalStock: 0 }],
-    } as never);
+  test('1 + 2: a new photo hard-resets old in-progress order state', async () => {
+    h.conv.state = 'AWAITING_NAME';
+    h.conv.contextJson = {
+      productId: 'old_product',
+      candidateProductId: 'old_candidate',
+      size: '40',
+      qty: 1,
+      customerName: 'Old Name',
+      address: 'Old address',
+      city: 'OldCity',
+      pincode: '111111',
+      activeFlowVersion: 3,
+    } as never;
+    vi.mocked(matchProduct).mockResolvedValue(noMatchOutcome as never);
 
     await handleInboundMessage(imageInput as never);
 
-    expect(allSentText().toLowerCase()).toContain('out of stock');
+    // Old product/order fields are gone and the flow version was bumped.
+    const ctx = h.conv.contextJson as Record<string, unknown>;
+    expect(ctx.productId).toBeUndefined();
+    expect(ctx.candidateProductId).toBeUndefined();
+    expect(ctx.size).toBeUndefined();
+    expect(ctx.customerName).toBeUndefined();
+    expect(ctx.activeFlowVersion).toBe(4);
+  });
+
+  test('3: a slow old match result is discarded when a newer photo arrived', async () => {
+    vi.mocked(getProductAvailability).mockResolvedValue(availability([{ size: '40', stock: 2 }]) as never);
+    // Simulate a newer flow starting WHILE this match runs.
+    vi.mocked(matchProduct).mockImplementation(async () => {
+      (h.conv.contextJson as Record<string, unknown>).activeFlowVersion = 999;
+      return outcome(0.9) as never;
+    });
+
+    await handleInboundMessage(imageInput as never);
+
+    expect(customerReplyCount()).toBe(0); // stale → send nothing
   });
 
   test('empty inventory → no download and zero responses', async () => {
@@ -363,6 +320,35 @@ describe('image-first silent-match policy', () => {
 
     expect(downloadMediaToBuffer).not.toHaveBeenCalled();
     expect(customerReplyCount()).toBe(0);
+  });
+});
+
+describe('order creation + QR payment', () => {
+  test('15 + 19 + 20 + 21: address reply → order qty 1, QR image with amount, no UPI ID', async () => {
+    env.PAYMENT_QR_IMAGE_URL = 'https://cdn.test/qr.png';
+    h.conv.state = 'AWAITING_ADDRESS';
+    h.conv.contextJson = {
+      productId: 'p1',
+      productName: 'Blue Suit',
+      size: '40',
+      qty: 1,
+      productPrice: 1760,
+      availableSizes: ['40'],
+    } as never;
+    vi.mocked(checkStock).mockResolvedValue({ available: true, stock: 5, reserved: 0, physicalStock: 5 } as never);
+    vi.mocked(createOrderFromContext).mockResolvedValue({ orderId: 'o1', orderNumber: 'ORD-1', total: 1860 } as never);
+
+    await handleInboundMessage(textInput('H-12, Sector 5, Jaipur, Rajasthan 302021') as never);
+
+    expect(createOrderFromContext).toHaveBeenCalledWith(
+      expect.objectContaining({ ctx: expect.objectContaining({ qty: 1 }) }),
+    );
+    expect(sendImage).toHaveBeenCalledWith(
+      '919999999999',
+      { link: 'https://cdn.test/qr.png' },
+      expect.stringContaining('Amount to pay: ₹1860'),
+    );
+    expect(allSentText().toLowerCase()).not.toContain('upi');
   });
 });
 

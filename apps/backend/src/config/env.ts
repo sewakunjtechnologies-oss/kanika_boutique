@@ -59,10 +59,12 @@ const envSchema = z.object({
   CHATBOT_ENABLE_AI_IMAGE_MATCHING: envBool.default(false),
   // Product-photo matching policy. Higher score = better visual match.
   // Auto-match replies to the customer only when score and runner-up margin are both strong.
-  IMAGE_AUTO_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.65),
-  // Candidate band: below auto but >= this, the bot asks the customer to confirm the likely product.
-  IMAGE_CANDIDATE_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.45),
-  // Minimum gap between best and second-best distinct products for automatic acceptance.
+  // Single confirm-first threshold: any top distinct product at/above this score
+  // is sent to the customer as a photo + YES/NO to confirm. Below it: silent.
+  IMAGE_AUTO_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
+  IMAGE_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).optional(),
+  // Retained for backward-compatible env parsing / matcher banding.
+  IMAGE_CANDIDATE_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
   IMAGE_MIN_SCORE_MARGIN: z.coerce.number().min(0).max(1).default(0.08),
   // Deprecated aliases retained so older deployments do not fail env parsing.
   IMAGE_MATCH_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).optional(),
@@ -115,6 +117,9 @@ const envSchema = z.object({
   // Business settings (also overridable from Settings table).
   BUSINESS_NAME: z.string().default('Kanika Designs'),
   UPI_ID: z.string().default('kanikadesigns@upi'),
+  // Permanent, publicly-reachable URL of the shop payment QR image (e.g. Cloudinary).
+  // Sent as a WhatsApp image at checkout instead of a UPI ID. Must be Meta-accessible.
+  PAYMENT_QR_IMAGE_URL: z.string().default(''),
   DEFAULT_SHIPPING_FEE: z.coerce.number().default(100),
 
   // Owner/admin WhatsApp numbers for payment-approval alerts (E.164 without '+',
@@ -150,6 +155,12 @@ if (!parsed.success) {
 
 const envData = parsed.data;
 envData.AUTO_PRINT_ORDER_LABELS ??= envData.AUTO_PRINT_ON_PAYMENT_APPROVAL;
+// IMAGE_MATCH_THRESHOLD is the canonical single confirm-first threshold; when set
+// it drives the auto/candidate thresholds so both stay in sync.
+if (envData.IMAGE_MATCH_THRESHOLD !== undefined) {
+  envData.IMAGE_AUTO_MATCH_THRESHOLD = envData.IMAGE_MATCH_THRESHOLD;
+  envData.IMAGE_CANDIDATE_MATCH_THRESHOLD = envData.IMAGE_MATCH_THRESHOLD;
+}
 envData.IMAGE_MATCH_MIN_CONFIDENCE ??= envData.IMAGE_AUTO_MATCH_THRESHOLD;
 envData.IMAGE_MATCH_SECOND_BEST_MIN_MARGIN ??= envData.IMAGE_MIN_SCORE_MARGIN;
 envData.SESSION_COOKIE_SECURE ??= envData.NODE_ENV === 'production';

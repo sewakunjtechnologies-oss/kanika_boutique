@@ -77,6 +77,7 @@ export async function sendInteractiveButtons(
   to: string,
   bodyText: string,
   buttons: InteractiveButton[],
+  options: { headerImageUrl?: string } = {},
 ): Promise<SendOutcome> {
   if (buttons.length === 0 || buttons.length > 3) {
     throw new Error('WhatsApp interactive buttons require 1–3 buttons');
@@ -89,6 +90,9 @@ export async function sendInteractiveButtons(
       type: 'interactive',
       interactive: {
         type: 'button',
+        ...(options.headerImageUrl
+          ? { header: { type: 'image', image: { link: options.headerImageUrl } } }
+          : {}),
         body: { text: bodyText },
         action: {
           buttons: buttons.map((b) => ({

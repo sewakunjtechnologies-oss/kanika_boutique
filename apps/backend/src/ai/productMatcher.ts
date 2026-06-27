@@ -343,7 +343,11 @@ function scoreToCandidate(score: ImageMatchScore): ProductMatchCandidate {
   };
 }
 
-async function fetchCatalog(): Promise<CatalogEntry[]> {
+/** Identifier for the active image-matching technique (perceptual hashes +
+ * optional Gemini embedding fallback). Bump when the technique changes. */
+export const IMAGE_MATCH_MODEL_VERSION = 'perceptual-v2-normalised';
+
+export async function fetchCatalog(): Promise<CatalogEntry[]> {
   const products = await prisma.product.findMany({
     where: { isActive: true, variants: { some: { isActive: true, stock: { gt: 0 } } } },
     select: {
@@ -400,7 +404,7 @@ function buildCatalogImageParts(catalogImages: CatalogImageCandidate[]): Part[] 
   return parts;
 }
 
-async function buildCatalogImageCandidates(catalog: CatalogEntry[]): Promise<CatalogImageCandidate[]> {
+export async function buildCatalogImageCandidates(catalog: CatalogEntry[]): Promise<CatalogImageCandidate[]> {
   const candidates: CatalogImageCandidate[] = [];
   for (const product of catalog) {
     const image = await loadCatalogImageBuffer(product.imageUrl ?? '');

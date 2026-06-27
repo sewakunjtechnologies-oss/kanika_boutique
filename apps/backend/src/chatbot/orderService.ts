@@ -165,6 +165,7 @@ export async function getProductAvailability(
   name: string;
   category: string;
   basePrice: string;
+  imageUrl: string;
   isActive: boolean;
   variants: { id: string; size: string; color: string | null; stock: number; physicalStock: number; reserved: number }[];
 } | null> {
@@ -192,6 +193,7 @@ export async function getProductAvailability(
     name: product.name,
     category: product.category,
     basePrice: product.basePrice.toString(),
+    imageUrl: product.imageUrl ?? '',
     isActive: product.isActive,
     variants: product.variants.map((variant) => {
       const reserved = reservedByVariant.get(variant.id) ?? 0;
