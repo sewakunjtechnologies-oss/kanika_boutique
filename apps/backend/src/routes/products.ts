@@ -8,6 +8,7 @@ import { env } from '../config/env';
 import { deleteImage } from '../storage/cloudinary';
 import { logger } from '../logger';
 import { matchProduct } from '../ai/productMatcher';
+import { productListStatusWhere, decideProductDeletion } from './productCrud';
 
 export const productsRouter = Router();
 
@@ -53,16 +54,22 @@ productsRouter.use(requireAuth);
 productsRouter.get('/products', async (req: Request, res: Response): Promise<void> => {
   const q = (req.query.q as string) ?? '';
   const limit = Math.min(parseInt((req.query.limit as string) ?? '50', 10) || 50, 200);
+  // Active inventory by default. Archived (isActive=false / soft-deleted) products
+  // must NOT appear in normal lists, the manual-receipt selector or matching.
+  // `status=archived` returns only archived; `status=all` returns everything.
   const products = await prisma.product.findMany({
-    where: q
-      ? {
-          OR: [
-            { name: { contains: q, mode: 'insensitive' } },
-            { sku: { contains: q, mode: 'insensitive' } },
-            { category: { contains: q, mode: 'insensitive' } },
-          ],
-        }
-      : {},
+    where: {
+      ...productListStatusWhere(req.query.status as string | undefined),
+      ...(q
+        ? {
+            OR: [
+              { name: { contains: q, mode: 'insensitive' } },
+              { sku: { contains: q, mode: 'insensitive' } },
+              { category: { contains: q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    },
     include: { variants: { where: { isActive: true } }, categoryRecord: true },
     orderBy: { createdAt: 'desc' },
     take: limit,
@@ -257,37 +264,54 @@ productsRouter.delete('/products/:id', requireOwner, async (req: Request, res: R
   const id = req.params.id as string;
   const hard = req.query.hard === 'true';
 
-  if (hard) {
-    // Capture the Cloudinary asset before the row is gone; only delete it on a real hard
-    // delete (soft delete/deactivation keeps the product and its image).
-    const existing = await prisma.product.findUnique({ where: { id }, select: { imagePublicId: true } });
+  const existing = await prisma.product.findUnique({
+    where: { id },
+    select: { id: true, imagePublicId: true, isActive: true },
+  });
+  if (!existing) {
+    res.status(404).json({ ok: false, code: 'NOT_FOUND', message: 'Product not found' });
+    return;
+  }
+
+  const references = await countProductReferences(id);
+  const isReferenced = references.orders > 0 || references.receiptItems > 0;
+
+  if (decideProductDeletion({ hard, isReferenced }) === 'deleted') {
     try {
-      // Schema cascades variants on product delete, but OrderItem→variant is Restrict.
+      // Schema cascades variants on product delete; OrderItem/ManualReceiptItem/
+      // StockMovement → variant are Restrict, so a still-referenced product throws P2003.
       await prisma.product.delete({ where: { id } });
-      if (existing?.imagePublicId) await safeDeleteImage(existing.imagePublicId);
+      if (existing.imagePublicId) await safeDeleteImage(existing.imagePublicId);
       emitToDashboard('inventory_changed', { productId: id, deleted: 'hard' });
-      res.json({ ok: true, mode: 'hard' });
+      res.json({ ok: true, action: 'deleted', mode: 'hard', id });
       return;
     } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
-        // FK violation — variants are referenced by orders. Fall back to soft.
-        await prisma.product.update({ where: { id }, data: { isActive: false } });
-        emitToDashboard('inventory_changed', { productId: id, deleted: 'soft_fallback' });
-        res.json({
-          ok: true,
-          mode: 'soft_fallback',
-          reason: 'product has order or stock history — deactivated instead',
-        });
-        return;
-      }
-      throw err;
+      // Any remaining Restrict reference (e.g. stock movements) → archive instead.
+      if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2003') throw err;
     }
   }
 
+  // Archive (soft delete): referenced product, or a non-hard request. Idempotent.
   await prisma.product.update({ where: { id }, data: { isActive: false } });
-  emitToDashboard('inventory_changed', { productId: id, deleted: 'soft' });
-  res.json({ ok: true, mode: 'soft' });
+  emitToDashboard('inventory_changed', { productId: id, deleted: hard ? 'soft_fallback' : 'soft' });
+  res.json({
+    ok: true,
+    action: 'archived',
+    mode: hard ? 'soft_fallback' : 'soft',
+    id,
+    references,
+    ...(hard ? { reason: 'product is used in existing orders/receipts — archived instead of deleted' } : {}),
+  });
 });
+
+/** Count the history references that block a hard product delete. */
+async function countProductReferences(productId: string): Promise<{ orders: number; receiptItems: number }> {
+  const [orders, receiptItems] = await Promise.all([
+    prisma.orderItem.count({ where: { variant: { productId } } }),
+    prisma.manualReceiptItem.count({ where: { variant: { productId } } }),
+  ]);
+  return { orders, receiptItems };
+}
 
 // =============================================================================
 // VARIANTS

@@ -34,11 +34,15 @@ export default function InventoryPage(): React.ReactElement {
   const [q, setQ] = useState('');
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<'active' | 'archived'>('active');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  async function load(): Promise<void> {
+  async function load(nextStatus: 'active' | 'archived' = status): Promise<void> {
     setLoading(true);
     try {
-      const r = await api.get<{ products: Product[] }>(`/api/products?q=${encodeURIComponent(q)}`);
+      const r = await api.get<{ products: Product[] }>(
+        `/api/products?q=${encodeURIComponent(q)}&status=${nextStatus}`,
+      );
       setProducts(r.products);
     } finally {
       setLoading(false);
@@ -72,8 +76,18 @@ export default function InventoryPage(): React.ReactElement {
             className="pl-9"
           />
         </div>
-        <Button variant="outline" onClick={load}>
+        <Button variant="outline" onClick={() => load()}>
           Search
+        </Button>
+        <Button
+          variant={status === 'archived' ? 'default' : 'outline'}
+          onClick={() => {
+            const next = status === 'active' ? 'archived' : 'active';
+            setStatus(next);
+            void load(next);
+          }}
+        >
+          {status === 'archived' ? 'Viewing archived' : 'Show archived'}
         </Button>
       </div>
 
@@ -129,22 +143,54 @@ export default function InventoryPage(): React.ReactElement {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
+                      {!p.isActive && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="mr-2"
+                          disabled={deletingId === p.id}
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            setDeletingId(p.id);
+                            try {
+                              await api.put(`/api/products/${p.id}`, { isActive: true });
+                              toast.success('Product restored');
+                              await load();
+                            } catch {
+                              toast.error('Restore failed');
+                            } finally {
+                              setDeletingId(null);
+                            }
+                          }}
+                        >
+                          Restore
+                        </Button>
+                      )}
                       <Button
                         size="icon"
                         variant="ghost"
+                        disabled={deletingId === p.id}
                         onClick={async (e) => {
                           e.stopPropagation();
-                          if (!confirm(`Delete "${p.name}"? Cannot be undone if no orders reference it.`))
+                          if (deletingId) return; // prevent double-click / concurrent deletes
+                          if (
+                            !confirm(
+                              `Delete "${p.name}"?\n\nIf it is used in existing orders or receipts it will be archived (kept for history) instead of permanently deleted.`,
+                            )
+                          )
                             return;
+                          setDeletingId(p.id);
                           try {
-                            const r = await api.delete<{ mode: 'hard' | 'soft_fallback'; reason?: string }>(
+                            const r = await api.delete<{ action?: 'deleted' | 'archived'; mode?: string; reason?: string }>(
                               `/api/products/${p.id}?hard=true`,
                             );
-                            if (r.mode === 'hard') toast.success('Deleted');
-                            else toast.warning(r.reason ?? 'Deactivated (had order history)');
-                            void load();
+                            if (r.action === 'deleted' || r.mode === 'hard') toast.success('Product deleted');
+                            else toast.success(r.reason ?? 'Product archived (kept for order history)');
+                            await load();
                           } catch {
-                            toast.error('Delete failed');
+                            toast.error('Delete failed — product was not changed');
+                          } finally {
+                            setDeletingId(null);
                           }
                         }}
                       >
