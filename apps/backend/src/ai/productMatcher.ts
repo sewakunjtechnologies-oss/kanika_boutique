@@ -15,6 +15,7 @@ import {
 import {
   inspectImageBuffer,
   rankImageMatches,
+  type ImageMatchType,
   type ImageMatchScore,
   type ImageCandidate,
 } from './imageMatcher';
@@ -31,6 +32,20 @@ export interface ProductMatchCandidate {
   name: string;
   imageUrl: string;
   confidence: number;
+  imageId?: string;
+  imageRef?: string;
+  matchType?: ImageMatchType;
+  averageHashSimilarity?: number;
+  differenceHashSimilarity?: number;
+  perceptualHashSimilarity?: number;
+  pixelSimilarity?: number;
+  colorPixelSimilarity?: number;
+  structuralSimilarity?: number;
+  edgeSimilarity?: number;
+  colorSimilarity?: number;
+  embeddingSimilarity?: number | null;
+  nearDuplicateScore?: number;
+  generalScore?: number;
 }
 
 export interface CatalogEntry {
@@ -41,6 +56,7 @@ export interface CatalogEntry {
   category: string;
   basePrice: string;
   imageUrl?: string;
+  imagePublicId?: string | null;
   totalStock?: number;
 }
 
@@ -57,6 +73,8 @@ export interface ProductMatchOutcome extends ProductMatchResult {
   decision: ProductMatchDecision;
   candidates: ProductMatchCandidate[];
   bestSecondMargin: number | null;
+  matchType: ImageMatchType | null;
+  decisionReason: string;
 }
 
 export function classifyProductMatchConfidence(confidence: number): ProductMatchConfidenceBand {
@@ -78,7 +96,10 @@ export function hasClearBestImageCandidate(
 export function classifyImageMatchDecision(
   topScore: number,
   margin: number | null | undefined,
+  matchType: ImageMatchType = 'GENERAL_MATCH',
 ): ProductMatchDecision {
+  if (matchType === 'EXACT_MATCH') return 'auto_match';
+  if (matchType === 'NEAR_DUPLICATE_MATCH' && topScore >= env.IMAGE_MATCH_THRESHOLD) return 'auto_match';
   const clearMargin = margin === null || margin === undefined || margin >= env.IMAGE_MIN_SCORE_MARGIN;
   if (topScore >= env.IMAGE_MATCH_THRESHOLD && clearMargin) return 'auto_match';
   return 'no_match';
@@ -109,6 +130,8 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       decision: 'no_match',
       candidates: [],
       bestSecondMargin: null,
+      matchType: null,
+      decisionReason: 'empty_catalog',
     };
   }
 
@@ -129,6 +152,8 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       decision: 'no_match',
       candidates: [],
       bestSecondMargin: null,
+      matchType: null,
+      decisionReason: queryDiagnostics.reason ?? 'unusable_image',
     };
   }
 
@@ -138,7 +163,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
     catalogSize: catalog.length,
   });
   botLog(
-    'MATCH_STARTED',
+    'IMAGE_MATCH_STARTED',
     {
       catalogSize: catalog.length,
       catalogImageCount: catalogImages.length,
@@ -161,6 +186,8 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
         decision: 'no_match',
         candidates: [],
         bestSecondMargin: null,
+        matchType: null,
+        decisionReason: 'decode_failed',
       };
     }
     const best = ranked[0];
@@ -168,36 +195,25 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
     const candidates = ranked.slice(0, 5).map(scoreToCandidate);
     const confidenceBand = classifyProductMatchConfidence(best?.confidence ?? 0);
     const bestSecondMargin = best && second ? Math.max(best.confidence - second.confidence, 0) : best ? 1 : null;
-    const hasClearBestMatch = hasClearBestImageCandidate(best?.confidence, second?.confidence);
-    const decision = classifyImageMatchDecision(best?.confidence ?? 0, bestSecondMargin);
-    botLog(
-      'BEST_MATCH_FOUND',
-      {
-        productId: best?.productId ?? null,
-        sku: best?.sku ?? null,
-        confidence: best?.confidence ?? 0,
-        secondProductId: second?.productId ?? null,
-        secondConfidence: second?.confidence ?? 0,
-        bestSecondMargin,
-        requiredMargin: env.IMAGE_MIN_SCORE_MARGIN,
-        threshold: env.IMAGE_MATCH_THRESHOLD,
-        decision,
-        averageHashSimilarity: best?.averageHashSimilarity ?? 0,
-        differenceHashSimilarity: best?.differenceHashSimilarity ?? 0,
-        colorSimilarity: best?.colorSimilarity ?? 0,
-      },
-    );
+    const bypassGenericMargin = best?.matchType === 'EXACT_MATCH' || best?.matchType === 'NEAR_DUPLICATE_MATCH';
+    const hasClearBestMatch =
+      bypassGenericMargin || hasClearBestImageCandidate(best?.confidence, second?.confidence);
+    const decision = classifyImageMatchDecision(best?.confidence ?? 0, bestSecondMargin, best?.matchType);
+    const finalDecision = classifyStructuredImageDecision(best, decision, bestSecondMargin);
+    logImageMatchStages(ranked, catalogImages.length, bestSecondMargin, finalDecision);
 
-    if (best && confidenceBand === 'high' && hasClearBestMatch) {
+    if (best && decision === 'auto_match' && confidenceBand === 'high' && hasClearBestMatch) {
       return {
         matchedProductId: best.productId,
         confidence: best.confidence,
-        reasoning: `perceptual image match against catalog image for ${best.sku}`,
+        reasoning: `${best.matchType.toLowerCase()} against catalog image for ${best.sku}`,
         meetsThreshold: true,
         confidenceBand,
         decision: 'auto_match',
         candidates,
         bestSecondMargin,
+        matchType: best.matchType,
+        decisionReason: best.matchType,
       };
     }
 
@@ -215,6 +231,8 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
         decision,
         candidates,
         bestSecondMargin,
+        matchType: best?.matchType ?? null,
+        decisionReason: hasClearBestMatch ? 'below_threshold' : 'ambiguous_margin',
       };
     }
   }
@@ -229,6 +247,8 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       decision: 'no_match',
       candidates: [],
       bestSecondMargin: null,
+      matchType: null,
+      decisionReason: 'deterministic_no_match_ai_disabled',
     };
   }
 
@@ -267,6 +287,8 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       decision: 'no_match',
       candidates: [],
       bestSecondMargin: null,
+      matchType: null,
+      decisionReason: 'ai_invalid_output',
     };
   }
 
@@ -283,6 +305,8 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       decision: 'no_match',
       candidates: [],
       bestSecondMargin: null,
+      matchType: null,
+      decisionReason: 'ai_returned_unknown_product',
     };
   }
 
@@ -326,6 +350,8 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
     decision,
     candidates,
     bestSecondMargin: null,
+    matchType: 'GENERAL_MATCH',
+    decisionReason: decision === 'auto_match' ? 'gemini_fallback' : 'below_threshold',
   };
 }
 
@@ -336,12 +362,122 @@ function scoreToCandidate(score: ImageMatchScore): ProductMatchCandidate {
     name: score.name,
     imageUrl: score.imageUrl,
     confidence: score.confidence,
+    imageId: score.imageId,
+    imageRef: safeImageRef(score.imageUrl),
+    matchType: score.matchType,
+    averageHashSimilarity: score.averageHashSimilarity,
+    differenceHashSimilarity: score.differenceHashSimilarity,
+    perceptualHashSimilarity: score.perceptualHashSimilarity,
+    pixelSimilarity: score.pixelSimilarity,
+    colorPixelSimilarity: score.colorPixelSimilarity,
+    structuralSimilarity: score.structuralSimilarity,
+    edgeSimilarity: score.edgeSimilarity,
+    colorSimilarity: score.colorSimilarity,
+    embeddingSimilarity: score.embeddingSimilarity,
+    nearDuplicateScore: score.nearDuplicateScore,
+    generalScore: score.generalScore,
+  };
+}
+
+type StructuredImageDecision = 'EXACT_MATCH' | 'NEAR_DUPLICATE_MATCH' | 'GENERAL_MATCH' | 'AMBIGUOUS' | 'NO_MATCH';
+
+function classifyStructuredImageDecision(
+  best: ImageMatchScore | undefined,
+  decision: ProductMatchDecision,
+  margin: number | null,
+): StructuredImageDecision {
+  if (!best) return 'NO_MATCH';
+  if (decision === 'auto_match') return best.matchType;
+  if (best.confidence >= env.IMAGE_MATCH_THRESHOLD && margin !== null && margin < env.IMAGE_MIN_SCORE_MARGIN) {
+    return 'AMBIGUOUS';
+  }
+  return 'NO_MATCH';
+}
+
+function logImageMatchStages(
+  ranked: ImageMatchScore[],
+  candidateCount: number,
+  scoreMargin: number | null,
+  finalDecision: StructuredImageDecision,
+): void {
+  const best = ranked[0];
+  const second = ranked[1];
+  const exactCount = ranked.filter((score) => score.matchType === 'EXACT_MATCH').length;
+  const nearDuplicateCount = ranked.filter((score) => score.matchType === 'NEAR_DUPLICATE_MATCH').length;
+  const generalCount = ranked.filter((score) => score.matchType === 'GENERAL_MATCH').length;
+
+  botLog('IMAGE_MATCH_EXACT_HASH_CHECK', {
+    candidateCount,
+    exactMatchCount: exactCount,
+    topSku: best?.matchType === 'EXACT_MATCH' ? best.sku : null,
+    topScore: best?.matchType === 'EXACT_MATCH' ? best.confidence : null,
+  });
+  botLog('IMAGE_MATCH_NEAR_DUPLICATE_CHECK', {
+    candidateCount,
+    nearDuplicateCount,
+    threshold: env.IMAGE_NEAR_DUPLICATE_THRESHOLD,
+    pHashThreshold: env.IMAGE_NEAR_DUPLICATE_PHASH_THRESHOLD,
+    pixelThreshold: env.IMAGE_NEAR_DUPLICATE_PIXEL_THRESHOLD,
+    edgeThreshold: env.IMAGE_NEAR_DUPLICATE_EDGE_THRESHOLD,
+    featureThreshold: env.IMAGE_NEAR_DUPLICATE_FEATURE_THRESHOLD,
+    topSku: best?.matchType === 'NEAR_DUPLICATE_MATCH' ? best.sku : null,
+    topScore: best?.matchType === 'NEAR_DUPLICATE_MATCH' ? best.confidence : null,
+  });
+  botLog('IMAGE_MATCH_GENERAL_CHECK', {
+    candidateCount,
+    generalCount,
+    threshold: env.IMAGE_MATCH_THRESHOLD,
+    requiredMargin: env.IMAGE_MIN_SCORE_MARGIN,
+    topSku: best?.sku ?? null,
+    topScore: best?.confidence ?? null,
+    secondScore: second?.confidence ?? null,
+    scoreMargin,
+  });
+  botLog('IMAGE_MATCH_TOP_CANDIDATES', {
+    candidateCount,
+    candidates: ranked.slice(0, 5).map((score, index) => scoreToLog(score, index)),
+  });
+  botLog('IMAGE_MATCH_DECISION', {
+    candidateCount,
+    topSku: best?.sku ?? null,
+    topScore: best?.confidence ?? 0,
+    secondScore: second?.confidence ?? null,
+    scoreMargin,
+    matchType: best?.matchType ?? null,
+    finalDecision,
+    threshold: env.IMAGE_MATCH_THRESHOLD,
+    requiredMargin: env.IMAGE_MIN_SCORE_MARGIN,
+  });
+}
+
+function scoreToLog(score: ImageMatchScore, index: number): Record<string, unknown> {
+  return {
+    rank: index + 1,
+    productId: score.productId,
+    sku: score.sku,
+    imageId: score.imageId,
+    imageRef: safeImageRef(score.imageUrl),
+    matchType: score.matchType,
+    combinedScore: score.confidence,
+    perceptualScore: score.perceptualHashSimilarity,
+    averageHashSimilarity: score.averageHashSimilarity,
+    differenceHashSimilarity: score.differenceHashSimilarity,
+    structuralScore: score.structuralSimilarity,
+    pixelScore: score.pixelSimilarity,
+    colourPixelScore: score.colorPixelSimilarity,
+    edgeScore: score.edgeSimilarity,
+    embeddingScore: score.embeddingSimilarity,
+    colourScore: score.colorSimilarity,
+    nearDuplicateScore: score.nearDuplicateScore,
+    generalScore: score.generalScore,
+    rawHashMatch: score.rawHashMatch,
+    decodedHashMatch: score.decodedHashMatch,
   };
 }
 
 /** Identifier for the active image-matching technique (perceptual hashes +
  * optional Gemini embedding fallback). Bump when the technique changes. */
-export const IMAGE_MATCH_MODEL_VERSION = 'perceptual-v2-normalised';
+export const IMAGE_MATCH_MODEL_VERSION = 'perceptual-v3-multistage';
 
 export async function fetchCatalog(): Promise<CatalogEntry[]> {
   const products = await prisma.product.findMany({
@@ -354,6 +490,7 @@ export async function fetchCatalog(): Promise<CatalogEntry[]> {
       category: true,
       basePrice: true,
       imageUrl: true,
+      imagePublicId: true,
       variants: { where: { isActive: true }, select: { stock: true } },
     },
     orderBy: { category: 'asc' },
@@ -366,6 +503,7 @@ export async function fetchCatalog(): Promise<CatalogEntry[]> {
     category: p.category,
     basePrice: p.basePrice.toString(),
     imageUrl: p.imageUrl,
+    imagePublicId: p.imagePublicId,
     totalStock: p.variants.reduce((sum, v) => sum + v.stock, 0),
   }));
 }
@@ -410,6 +548,7 @@ export async function buildCatalogImageCandidates(catalog: CatalogEntry[]): Prom
       sku: product.sku,
       name: product.name,
       imageUrl: product.imageUrl ?? '',
+      imageId: product.imagePublicId ?? `${product.id}:primary`,
       imageBuffer: image.buffer,
       mimeType: image.mimeType,
     });

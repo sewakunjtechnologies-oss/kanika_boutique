@@ -158,10 +158,37 @@ model Product {
 
   categoryRecord Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   variants       ProductVariant[]
+  imageFeatures  ProductImageFeature[]
 
   @@index([category])
   @@index([categoryId])
   @@index([sku])
+}
+
+model ProductImageFeature {
+  id               String   @id @default(cuid())
+  sourceImageId    String
+  productId        String
+  imageUrl         String
+  imageHash        String
+  decodedImageHash String
+  algorithmVersion String
+  schemaVersion    Int
+  width            Int
+  height           Int
+  format           String?
+  averageHash      String
+  differenceHash   String
+  perceptualHash   String
+  generatedAt      DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceImageId, algorithmVersion, schemaVersion])
+  @@index([productId])
+  @@index([imageHash])
+  @@index([algorithmVersion, schemaVersion])
 }
 
 model Category {

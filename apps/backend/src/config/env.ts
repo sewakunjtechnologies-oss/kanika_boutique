@@ -64,7 +64,12 @@ const envSchema = z.object({
   // Retained for backward-compatible env parsing; synced to IMAGE_MATCH_THRESHOLD below.
   IMAGE_AUTO_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).optional(),
   IMAGE_CANDIDATE_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).optional(),
-  IMAGE_MIN_SCORE_MARGIN: z.coerce.number().min(0).max(1).default(0.08),
+  IMAGE_MIN_SCORE_MARGIN: z.coerce.number().min(0).max(1).default(0.04),
+  IMAGE_NEAR_DUPLICATE_THRESHOLD: z.coerce.number().min(0).max(1).optional(),
+  IMAGE_NEAR_DUPLICATE_PHASH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.78),
+  IMAGE_NEAR_DUPLICATE_PIXEL_THRESHOLD: z.coerce.number().min(0).max(1).default(0.82),
+  IMAGE_NEAR_DUPLICATE_EDGE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.82),
+  IMAGE_NEAR_DUPLICATE_FEATURE_THRESHOLD: z.coerce.number().min(0).max(1).optional(),
   // Deprecated aliases retained so older deployments do not fail env parsing.
   IMAGE_MATCH_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).optional(),
   IMAGE_MATCH_SECOND_BEST_MIN_MARGIN: z.coerce.number().min(0).max(1).optional(),
@@ -160,6 +165,8 @@ envData.IMAGE_AUTO_MATCH_THRESHOLD = envData.IMAGE_MATCH_THRESHOLD;
 envData.IMAGE_CANDIDATE_MATCH_THRESHOLD = envData.IMAGE_MATCH_THRESHOLD;
 envData.IMAGE_MATCH_MIN_CONFIDENCE ??= envData.IMAGE_AUTO_MATCH_THRESHOLD;
 envData.IMAGE_MATCH_SECOND_BEST_MIN_MARGIN ??= envData.IMAGE_MIN_SCORE_MARGIN;
+envData.IMAGE_NEAR_DUPLICATE_FEATURE_THRESHOLD ??= envData.IMAGE_NEAR_DUPLICATE_THRESHOLD ?? 0.88;
+envData.IMAGE_NEAR_DUPLICATE_THRESHOLD ??= envData.IMAGE_NEAR_DUPLICATE_FEATURE_THRESHOLD;
 envData.SESSION_COOKIE_SECURE ??= envData.NODE_ENV === 'production';
 envData.SESSION_COOKIE_SAMESITE ??= areSameSiteUrls(envData.PUBLIC_BACKEND_URL, envData.PUBLIC_DASHBOARD_URL)
   ? 'lax'

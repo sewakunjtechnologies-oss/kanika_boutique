@@ -34,7 +34,7 @@ vi.mock('@kda/db', () => {
         findMany: vi.fn(async () => []),
       },
       message: { findFirst: vi.fn(async () => null), findUnique: vi.fn(async () => null) },
-      order: { findUnique: vi.fn(async () => null), findFirst: vi.fn(async () => null) },
+      order: { findUnique: vi.fn(async () => null), findFirst: vi.fn(async () => null), update: vi.fn(async () => ({})) },
       product: { findMany: vi.fn(async () => []), count: vi.fn(async () => 1) },
       customer: { upsert: vi.fn(async () => ({ id: 'cust1' })) },
       dashboardNotification: { create: vi.fn(async () => ({ id: 'n1' })) },
@@ -114,6 +114,7 @@ vi.mock('./orderService', () => ({
 import { prisma } from '@kda/db';
 import { sendText, sendImage, sendInteractiveButtons, sendInteractiveList, downloadMedia, downloadMediaToBuffer } from '../whatsapp/client';
 import { matchProduct } from '../ai/productMatcher';
+import { extractPayment } from '../ai/paymentExtractor';
 import { getProductAvailability, createOrderFromContext, checkStock } from './orderService';
 import { emitToDashboard } from '../realtime/io';
 import { handleInboundMessage } from './orchestrator';
@@ -186,6 +187,10 @@ beforeEach(() => {
   vi.mocked(prisma.product.count).mockResolvedValue(1 as never);
   vi.mocked(prisma.product.findMany).mockResolvedValue([] as never);
   vi.mocked(prisma.message.findFirst).mockResolvedValue(null as never);
+  vi.mocked(prisma.order.findUnique).mockResolvedValue(null as never);
+  vi.mocked(prisma.order.findFirst).mockResolvedValue(null as never);
+  vi.mocked(prisma.order.update).mockResolvedValue({} as never);
+  vi.mocked(prisma.dashboardNotification.create).mockClear().mockResolvedValue({ id: 'n1' } as never);
   vi.mocked(sendText).mockClear().mockResolvedValue({ ok: true, wamid: 'w', conversationId: 'conv1' });
   vi.mocked(sendImage).mockClear().mockResolvedValue({ ok: true, wamid: 'w', conversationId: 'conv1' });
   vi.mocked(sendInteractiveButtons).mockClear().mockResolvedValue({ ok: true, wamid: 'w', conversationId: 'conv1' });
@@ -237,6 +242,9 @@ function availability(sizes: Array<{ size: string; stock: number }>) {
   };
 }
 
+const EXACT_AVAILABILITY_CAPTION =
+  'Yes, it is available.\n\nBlue Suit\nArticle: SKU1\nPrice: ₹1760\nAvailable sizes: 40\n\nPlease send your size.';
+
 describe('direct image availability matching', () => {
   test('8: score below 0.50 → zero responses, no order', async () => {
     vi.mocked(matchProduct).mockResolvedValue(outcome(0.49) as never);
@@ -255,11 +263,7 @@ describe('direct image availability matching', () => {
     await handleInboundMessage(imageInput as never);
 
     expect(customerReplyCount()).toBe(1);
-    expect(sendImage).toHaveBeenCalledWith(
-      '919999999999',
-      { link: expect.stringContaining('/uploads/p1.jpg') },
-      expect.stringContaining('Yes, it is available.'),
-    );
+    expect(sendImage).toHaveBeenCalledWith('919999999999', { link: expect.stringContaining('/uploads/p1.jpg') }, EXACT_AVAILABILITY_CAPTION);
     expect(sendInteractiveButtons).not.toHaveBeenCalled();
     expect(sendInteractiveList).not.toHaveBeenCalled();
     expect(allSentText()).toContain('Article: SKU1');
@@ -444,6 +448,24 @@ describe('YES product confirmation → availability by variant stock', () => {
     expect(h.conv.state).toBe('AWAITING_NAME');
     expect(allSentText().toLowerCase()).toContain('name');
   });
+
+  test('invalid size keeps product selected and sends exact unavailable-size message only', async () => {
+    h.conv.state = 'AWAITING_SIZE';
+    h.conv.contextJson = { productId: 'p1', productName: 'Three-Piece Kurti', availableSizes: ['38', '40', '42'], qty: 1 } as never;
+    vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '38', stock: 1 }, { size: '40', stock: 2 }, { size: '42', stock: 1 }]) as never);
+
+    await handleInboundMessage(textInput('46') as never);
+
+    expect(h.conv.state).toBe('AWAITING_SIZE');
+    expect((h.conv.contextJson as Record<string, unknown>).productId).toBe('p1');
+    expect(sendText).toHaveBeenCalledWith(
+      '919999999999',
+      'That size is not available.\n\nAvailable sizes: 38, 40, 42\n\nPlease send one available size.',
+    );
+    expect(sendInteractiveButtons).not.toHaveBeenCalled();
+    expect(sendInteractiveList).not.toHaveBeenCalled();
+    expect(allSentText()).not.toMatch(/how many|quantity|pcs|stock/i);
+  });
 });
 
 describe('order creation + QR payment', () => {
@@ -459,7 +481,7 @@ describe('order creation + QR payment', () => {
       availableSizes: ['40'],
     } as never;
     vi.mocked(checkStock).mockResolvedValue({ available: true, stock: 5, reserved: 0, physicalStock: 5 } as never);
-    vi.mocked(createOrderFromContext).mockResolvedValue({ orderId: 'o1', orderNumber: 'ORD-1', total: 1860 } as never);
+    vi.mocked(createOrderFromContext).mockResolvedValue({ orderId: 'o1', orderNumber: 'ORD-2026-0001', total: 1860 } as never);
 
     await handleInboundMessage(textInput('H-12, Sector 5, Jaipur, Rajasthan 302021') as never);
 
@@ -469,9 +491,60 @@ describe('order creation + QR payment', () => {
     expect(sendImage).toHaveBeenCalledWith(
       '919999999999',
       { link: 'https://cdn.test/qr.png' },
-      expect.stringContaining('Amount to pay: ₹1860'),
+      'Order #ORD-2026-0001\nAmount to pay: ₹1860\n\nPlease send the payment screenshot once paid.',
     );
     expect(allSentText().toLowerCase()).not.toContain('upi');
+  });
+
+  test('payment screenshot attaches proof, notifies dashboard, and sends no customer acknowledgement', async () => {
+    h.conv.state = 'AWAITING_PAYMENT_SCREENSHOT';
+    h.conv.contextJson = { orderId: 'o1', orderNumber: 'ORD-2026-0001', total: 1860 } as never;
+    vi.mocked(downloadMedia).mockResolvedValue({ storedPath: 'payments/pay1.jpg', mimeType: 'image/jpeg' });
+    vi.mocked(extractPayment).mockResolvedValue({
+      amount: 1860,
+      utr: 'UTR123',
+      receiverUpi: 'shop@upi',
+      receiverName: null,
+      looksLegitimate: true,
+      reasoning: 'ok',
+    } as never);
+    const pendingOrder = {
+      id: 'o1',
+      customerId: 'cust1',
+      orderNumber: 'ORD-2026-0001',
+      status: 'PENDING',
+      totalAmount: { toString: () => '1860' },
+      shippingName: 'Madhav',
+      adminNotifiedAt: null,
+    };
+    vi.mocked(prisma.order.findUnique).mockResolvedValue(pendingOrder as never);
+    vi.mocked(prisma.order.findFirst)
+      .mockResolvedValueOnce(pendingOrder as never)
+      .mockResolvedValueOnce(null as never);
+
+    await handleInboundMessage({
+      ...imageInput,
+      receiverPhoneNumberId: 'business_phone_1',
+      message: {
+        ...imageInput.message,
+        id: 'wamid.PAY1',
+        image: { id: 'PAY_MEDIA', mime_type: 'image/jpeg' },
+      },
+    } as never);
+
+    expect(matchProduct).not.toHaveBeenCalled();
+    expect(prisma.order.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'o1' },
+      data: expect.objectContaining({
+        paymentScreenshotUrl: 'payments/pay1.jpg',
+        paymentScreenshotMediaId: 'PAY_MEDIA',
+        paymentCustomerWaId: '919999999999',
+        paymentReceiverPhoneId: 'business_phone_1',
+      }),
+    }));
+    expect(prisma.dashboardNotification.create).toHaveBeenCalledTimes(1);
+    expect(sendText).not.toHaveBeenCalledWith('919999999999', expect.any(String));
+    expect(sendImage).not.toHaveBeenCalledWith('919999999999', expect.anything(), expect.anything());
   });
 });
 

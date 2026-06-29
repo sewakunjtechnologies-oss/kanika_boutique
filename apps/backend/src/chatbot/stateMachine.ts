@@ -183,6 +183,24 @@ export const CANCEL_OR_CHANGE_MESSAGE =
 export const PRODUCT_FIRST_MESSAGE =
   "Please send the product photo or article number first, then I'll check availability.";
 
+export const NAME_QUESTION_MESSAGE = 'What name should we put on the order?';
+
+export const FULL_ADDRESS_QUESTION_MESSAGE =
+  'Please send your complete delivery address with house/flat, street/area, city, state and 6-digit pincode in one message.';
+
+export const FULL_ADDRESS_CORRECTION_MESSAGE =
+  'Please resend your complete address with house/flat, street/area, city, state and 6-digit pincode in one message.';
+
+export function unavailableSizeMessage(availableSizes: string[]): string {
+  return [
+    'That size is not available.',
+    '',
+    `Available sizes: ${availableSizes.join(', ')}`,
+    '',
+    'Please send one available size.',
+  ].join('\n');
+}
+
 export function isProductChangeIntent(text: string): boolean {
   const t = normalizeIntentText(text);
   return /\b(change product|change the product|different product|another product|something else|not this|wrong product|no this is not|change item|new product|want to change the product)\b/.test(t);
@@ -314,12 +332,7 @@ export function transition(
       return {
         nextState: ConversationState.AWAITING_VERIFICATION,
         context,
-        actions: [
-          {
-            type: 'SEND_TEXT',
-            body: 'Your payment is being verified. We will confirm within 2 hours.',
-          },
-        ],
+        actions: [],
       };
 
     case ConversationState.COMPLETED:
@@ -639,12 +652,7 @@ function handleSize(event: ChatEvent, context: OrderContext): TransitionResult {
     return {
       nextState: ConversationState.AWAITING_SIZE,
       context,
-      actions: [
-        buildSizePrompt(
-          context,
-          `Sorry, size ${size} isn't available. Available: ${context.availableSizes.join(', ')}.`,
-        ),
-      ],
+      actions: [{ type: 'SEND_TEXT', body: unavailableSizeMessage(context.availableSizes) }],
     };
   }
 
@@ -653,7 +661,7 @@ function handleSize(event: ChatEvent, context: OrderContext): TransitionResult {
   return {
     nextState: ConversationState.AWAITING_NAME,
     context: { ...context, size, qty: 1 },
-    actions: [{ type: 'SEND_TEXT', body: 'What name should we put on the order?' }],
+    actions: [{ type: 'SEND_TEXT', body: NAME_QUESTION_MESSAGE }],
   };
 }
 
@@ -664,7 +672,7 @@ function handleQty(event: ChatEvent, context: OrderContext): TransitionResult {
   return {
     nextState: ConversationState.AWAITING_NAME,
     context: { ...context, qty: 1 },
-    actions: [{ type: 'SEND_TEXT', body: 'What name should we put on the order?' }],
+    actions: [{ type: 'SEND_TEXT', body: NAME_QUESTION_MESSAGE }],
   };
 }
 
@@ -682,7 +690,7 @@ function handleName(event: ChatEvent, context: OrderContext): TransitionResult {
     actions: [
       {
         type: 'SEND_TEXT',
-        body: 'Please send your complete delivery address with house/flat, street/area, city, state and 6-digit pincode in one message.',
+        body: FULL_ADDRESS_QUESTION_MESSAGE,
       },
     ],
   };
@@ -741,7 +749,7 @@ function handleAddress(event: ChatEvent, context: OrderContext): TransitionResul
     actions: [
       {
         type: 'SEND_TEXT',
-        body: 'Please send your complete delivery address with house/flat, street/area, city, state and 6-digit pincode in one message.',
+        body: FULL_ADDRESS_CORRECTION_MESSAGE,
       },
     ],
   };
@@ -767,18 +775,18 @@ function handleAddress(event: ChatEvent, context: OrderContext): TransitionResul
 function handlePincode(event: ChatEvent, context: OrderContext): TransitionResult {
   if (event.type !== 'TEXT') {
     return {
-      nextState: ConversationState.AWAITING_PINCODE,
+      nextState: ConversationState.AWAITING_ADDRESS,
       context,
-      actions: [{ type: 'SEND_TEXT', body: 'Please share city, state and pincode.' }],
+      actions: [{ type: 'SEND_TEXT', body: FULL_ADDRESS_CORRECTION_MESSAGE }],
     };
   }
   const text = event.body.trim();
   const pincodeMatch = text.match(/\b(\d{6})\b/);
   if (!pincodeMatch) {
     return {
-      nextState: ConversationState.AWAITING_PINCODE,
+      nextState: ConversationState.AWAITING_ADDRESS,
       context,
-      actions: [{ type: 'SEND_TEXT', body: 'Please include a valid 6-digit pincode.' }],
+      actions: [{ type: 'SEND_TEXT', body: FULL_ADDRESS_CORRECTION_MESSAGE }],
     };
   }
   const pincode = pincodeMatch[1] as string;

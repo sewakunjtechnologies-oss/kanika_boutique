@@ -20,7 +20,11 @@ import {
   isProductChangeIntent,
   PRODUCT_REJECTED_MESSAGE,
   PRODUCT_FIRST_MESSAGE,
+  FULL_ADDRESS_CORRECTION_MESSAGE,
+  FULL_ADDRESS_QUESTION_MESSAGE,
+  NAME_QUESTION_MESSAGE,
   transition,
+  unavailableSizeMessage,
   type Action,
   type ChatEvent,
   type OrderContext,
@@ -1828,11 +1832,7 @@ async function handleSizeSelectionInput(
       await sendText(input.customerWhatsappNumber, 'This product is currently unavailable.');
       return true;
     }
-    await sendSizePicker(
-      input.customerWhatsappNumber,
-      `Size ${size} is not available. Available sizes: ${availableSizes.join(', ')}.`,
-      availableSizes,
-    );
+    await sendText(input.customerWhatsappNumber, unavailableSizeMessage(availableSizes));
     return true;
   }
 
@@ -1850,7 +1850,7 @@ async function handleSizeSelectionInput(
       contextJson: { ...ctx, size: chosen.size, selectedSize: chosen.size, qty: 1 } as never,
     },
   });
-  await sendText(input.customerWhatsappNumber, 'What name should we put on the order?');
+  await sendText(input.customerWhatsappNumber, NAME_QUESTION_MESSAGE);
   return true;
 }
 
@@ -1995,7 +1995,7 @@ async function buildPriceAnswer(ctx: OrderContext): Promise<string> {
 async function repeatCurrentPrompt(
   to: string,
   state: ConversationState,
-  ctx: OrderContext,
+  _ctx: OrderContext,
 ): Promise<void> {
   switch (state) {
     case ConversationState.AWAITING_PRODUCT_CONFIRMATION:
@@ -2012,25 +2012,24 @@ async function repeatCurrentPrompt(
       await sendText(to, PRODUCT_FIRST_MESSAGE);
       return;
     case ConversationState.AWAITING_SIZE:
-      await sendSizePicker(to, 'Please choose your size to continue the order.', ctx.availableSizes ?? []);
+      await sendText(to, 'Please send your size.');
       return;
     case ConversationState.AWAITING_QTY:
-      await sendText(to, `Please tell me the quantity for size ${ctx.size ?? ''}.`);
+      await sendText(to, NAME_QUESTION_MESSAGE);
       return;
     case ConversationState.AWAITING_NAME:
-      await sendText(to, 'Please share the full name for the order.');
+      await sendText(to, NAME_QUESTION_MESSAGE);
       return;
     case ConversationState.AWAITING_ADDRESS:
-      await sendText(to, 'Please share the full delivery address.');
+      await sendText(to, FULL_ADDRESS_QUESTION_MESSAGE);
       return;
     case ConversationState.AWAITING_PINCODE:
-      await sendText(to, 'Please share city, state, and 6-digit pincode.');
+      await sendText(to, FULL_ADDRESS_CORRECTION_MESSAGE);
       return;
     case ConversationState.AWAITING_PAYMENT:
     case ConversationState.AWAITING_PAYMENT_SCREENSHOT:
       return;
     case ConversationState.AWAITING_VERIFICATION:
-      await sendText(to, 'Your payment screenshot is with us for verification.');
       return;
     case ConversationState.IDLE:
     case ConversationState.COMPLETED:
@@ -2049,28 +2048,6 @@ async function sendPaymentQr(to: string, orderNumber: string, total: number | st
   // QR not configured — send only the payable amount. Never send the UPI ID.
   logger.warn('PAYMENT_QR_IMAGE_URL not set — sending amount text without QR image');
   await sendText(to, caption);
-}
-
-async function sendSizePicker(to: string, body: string, sizes: string[]): Promise<void> {
-  const uniqueSizes = [...new Set(sizes.filter(Boolean))].slice(0, 10);
-  if (uniqueSizes.length === 0) {
-    await sendText(to, body);
-    return;
-  }
-  if (uniqueSizes.length <= 3) {
-    await sendInteractiveButtons(
-      to,
-      body,
-      uniqueSizes.map((size) => ({ id: `size_${size}`, title: size })),
-    );
-    return;
-  }
-  await sendInteractiveList(to, body, 'Pick size', [
-    {
-      title: 'Available sizes',
-      rows: uniqueSizes.map((size) => ({ id: `size_${size}`, title: size })),
-    },
-  ]);
 }
 
 async function sendOrderStatus(input: OrchestratorInput, text: string): Promise<void> {
@@ -2260,9 +2237,12 @@ function logImageMatchDecision(
     conversationId: input.conversationId,
     candidateCount: candidates.length,
     matchedProductId: outcome?.matchedProductId ?? candidates[0]?.productId ?? null,
+    topSku: candidates[0]?.sku ?? null,
     topScore: outcome?.confidence ?? 0,
     secondScore: candidates[1]?.confidence ?? null,
     scoreMargin: outcome?.bestSecondMargin ?? null,
+    matchType: outcome?.matchType ?? candidates[0]?.matchType ?? null,
+    matcherDecisionReason: outcome?.decisionReason ?? null,
     decision,
     reason,
   };
@@ -2341,7 +2321,6 @@ export async function startFreshOrderFromConversationImage(conversationId: strin
       image: { id: mediaId, mime_type: 'image/jpeg' },
     } as IncomingMessage,
   };
-  await sendText(conv.customer.whatsappNumber, 'Starting a fresh order from the last product photo...');
   const outcome = await runProductMatchOutcome(mediaId);
   await respondToProductMatchOutcome(input, outcome, null, mediaId);
   return { ok: true };

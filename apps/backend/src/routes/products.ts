@@ -100,20 +100,40 @@ productsRouter.post('/products/image-match/diagnose', requireOwner, async (req: 
   const secondScore = outcome.candidates.find((candidate) => candidate.productId !== outcome.matchedProductId)?.confidence ?? null;
   res.json({
     decision: outcome.decision,
+    decisionReason: outcome.decisionReason,
+    matchType: outcome.matchType,
     topScore: outcome.confidence,
     secondScore,
     scoreMargin: outcome.bestSecondMargin,
     thresholds: {
-      auto: env.IMAGE_AUTO_MATCH_THRESHOLD,
-      candidate: env.IMAGE_CANDIDATE_MATCH_THRESHOLD,
+      match: env.IMAGE_MATCH_THRESHOLD,
       margin: env.IMAGE_MIN_SCORE_MARGIN,
+      nearDuplicate: env.IMAGE_NEAR_DUPLICATE_THRESHOLD,
+      nearDuplicatePHash: env.IMAGE_NEAR_DUPLICATE_PHASH_THRESHOLD,
+      nearDuplicatePixel: env.IMAGE_NEAR_DUPLICATE_PIXEL_THRESHOLD,
+      nearDuplicateEdge: env.IMAGE_NEAR_DUPLICATE_EDGE_THRESHOLD,
+      nearDuplicateFeature: env.IMAGE_NEAR_DUPLICATE_FEATURE_THRESHOLD,
     },
-    candidates: outcome.candidates.slice(0, 5).map((candidate) => ({
+    candidates: outcome.candidates.slice(0, 5).map((candidate, index) => ({
+      rank: index + 1,
       productId: candidate.productId,
       sku: candidate.sku,
       name: candidate.name,
-      thumbnail: candidate.imageUrl,
-      similarityScore: candidate.confidence,
+      imageId: candidate.imageId,
+      imageRef: candidate.imageRef,
+      matchType: candidate.matchType,
+      combinedScore: candidate.confidence,
+      perceptualScore: candidate.perceptualHashSimilarity,
+      structuralScore: candidate.structuralSimilarity,
+      pixelScore: candidate.pixelSimilarity,
+      colourPixelScore: candidate.colorPixelSimilarity,
+      edgeScore: candidate.edgeSimilarity,
+      embeddingScore: candidate.embeddingSimilarity,
+      colourScore: candidate.colorSimilarity,
+      averageHashSimilarity: candidate.averageHashSimilarity,
+      differenceHashSimilarity: candidate.differenceHashSimilarity,
+      nearDuplicateScore: candidate.nearDuplicateScore,
+      generalScore: candidate.generalScore,
       scoreMargin: Math.max(candidate.confidence - (secondScore ?? 0), 0),
     })),
   });
@@ -237,12 +257,18 @@ productsRouter.put('/products/:id', requireOwner, async (req: Request, res: Resp
   // Capture the current Cloudinary asset so we can delete it if the photo is replaced.
   const before = await prisma.product.findUnique({
     where: { id: (req.params.id as string) },
-    select: { imagePublicId: true },
+    select: { imagePublicId: true, imageUrl: true },
   });
   const product = await prisma.product.update({
     where: { id: (req.params.id as string) },
     data,
   });
+  const imageChanged =
+    (parsed.data.imageUrl !== undefined && before?.imageUrl !== parsed.data.imageUrl) ||
+    (parsed.data.imagePublicId !== undefined && before?.imagePublicId !== parsed.data.imagePublicId);
+  if (imageChanged) {
+    await prisma.productImageFeature.deleteMany({ where: { productId: product.id } });
+  }
   // Replaced photo → remove the old remote asset (best-effort; never blocks the response).
   if (
     parsed.data.imagePublicId &&
@@ -293,6 +319,7 @@ productsRouter.delete('/products/:id', requireOwner, async (req: Request, res: R
 
   // Archive (soft delete): referenced product, or a non-hard request. Idempotent.
   await prisma.product.update({ where: { id }, data: { isActive: false } });
+  await prisma.productImageFeature.deleteMany({ where: { productId: id } });
   emitToDashboard('inventory_changed', { productId: id, deleted: hard ? 'soft_fallback' : 'soft' });
   res.json({
     ok: true,

@@ -17,7 +17,8 @@
     "testai": "ts-node-dev --transpile-only --no-notify --quiet scripts/testAi.ts",
     "qa:bot": "ts-node-dev --transpile-only --no-notify --quiet scripts/qaSmoke.ts",
     "cloudinary:check": "ts-node-dev --transpile-only --no-notify --quiet scripts/cloudinaryCheck.ts",
-    "backfill:image-features": "ts-node-dev --transpile-only --no-notify --quiet scripts/backfillImageFeatures.ts"
+    "backfill:image-features": "ts-node-dev --transpile-only --no-notify --quiet scripts/backfillImageFeatures.ts",
+    "diagnose:image-match": "ts-node-dev --transpile-only --no-notify --quiet scripts/diagnoseImageMatch.ts"
   },
   "dependencies": {
     "@google/genai": "^1.5.1",

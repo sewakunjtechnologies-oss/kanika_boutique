@@ -6,7 +6,7 @@ import { requireAuth, requireManagerOrOwner, requireOwner } from '../auth/middle
 import { emitToDashboard } from '../realtime/io';
 import { sendText } from '../whatsapp/client';
 import { printSource } from '../printing/printNodeClient';
-import { getBusinessSettings, renderSettingTemplate } from '../settings/businessSettings';
+import { getBusinessSettings } from '../settings/businessSettings';
 import { getPaymentReviewWarnings } from '../chatbot/paymentSafety';
 import { recordStockMovement } from '../chatbot/orderService';
 import { pauseConversationsForOrder, readOrderContext } from '../chatbot/orderContextGuard';
@@ -403,15 +403,7 @@ ordersRouter.post(
 
       // Notify customer.
       try {
-        const intro = renderSettingTemplate(settings.orderConfirmationTemplate, {
-          order_number: order.orderNumber,
-          business_name: settings.businessName,
-          total: order.totalAmount.toString(),
-        });
-        await sendText(
-          order.customer.whatsappNumber,
-          await buildOrderConfirmationMessage(order.id, intro),
-        );
+        await sendText(order.customer.whatsappNumber, 'Payment approved. Your order is confirmed.');
       } catch (err) {
         logger.warn({ err, orderId: order.id }, 'failed to send confirmation WhatsApp');
       }
@@ -501,11 +493,10 @@ ordersRouter.post(
     emitToDashboard('order_status_changed', { orderId: order.id, status: 'REJECTED' });
 
     try {
-      const settings = await getBusinessSettings();
-      const msg =
-        parsed.data.reason ??
-        settings.paymentRejectionTemplate;
-      await sendText(order.customer.whatsappNumber, msg);
+      await sendText(
+        order.customer.whatsappNumber,
+        'Payment could not be approved. Please send a clear payment screenshot again.',
+      );
     } catch (err) {
       logger.warn({ err, orderId: order.id }, 'failed to send rejection WhatsApp');
     }
@@ -712,50 +703,6 @@ ordersRouter.get('/orders-summary/kpis', async (_req: Request, res: Response): P
     lowStockVariants,
   });
 });
-
-async function buildOrderConfirmationMessage(orderId: string, intro: string): Promise<string> {
-  const order = await prisma.order.findUnique({
-    where: { id: orderId },
-    include: {
-      items: {
-        include: {
-          variant: {
-            include: { product: { select: { sku: true, name: true } } },
-          },
-        },
-      },
-    },
-  });
-  if (!order) return intro;
-
-  const itemLines = order.items
-    .map((item) => {
-      const unitPrice = Number(item.unitPrice.toString());
-      const lineTotal = unitPrice * item.quantity;
-      return `- ${item.variant.product.name} (${item.variant.product.sku}), size ${item.variant.size} x ${item.quantity}: Rs ${formatAmount(lineTotal)}`;
-    })
-    .join('\n');
-
-  return [
-    intro,
-    '',
-    'Order details',
-    `Order: #${order.orderNumber}`,
-    itemLines,
-    `Subtotal: Rs ${formatAmount(order.subtotal)}`,
-    `Shipping: Rs ${formatAmount(order.shippingFee)}`,
-    `Total paid: Rs ${formatAmount(order.totalAmount)}`,
-    '',
-    'Delivery address',
-    order.shippingName,
-    order.shippingAddress,
-    `${order.shippingCity}, ${order.shippingState} - ${order.shippingPincode}`,
-  ].join('\n');
-}
-
-function formatAmount(value: Prisma.Decimal | number): string {
-  return Number(value.toString()).toFixed(0);
-}
 
 interface OrderForStockDeduction {
   id: string;

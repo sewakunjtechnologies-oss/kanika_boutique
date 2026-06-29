@@ -2,11 +2,15 @@ import { describe, expect, test } from 'vitest';
 import { ConversationState } from '@kda/db';
 import {
   CANCEL_OR_CHANGE_MESSAGE,
+  FULL_ADDRESS_CORRECTION_MESSAGE,
+  FULL_ADDRESS_QUESTION_MESSAGE,
+  NAME_QUESTION_MESSAGE,
   NEW_PRODUCT_REQUEST_MESSAGE,
   PRODUCT_FIRST_MESSAGE,
   PRODUCT_REJECTED_MESSAGE,
   parseFullAddress,
   transition,
+  unavailableSizeMessage,
   type OrderContext,
 } from './stateMachine';
 
@@ -45,7 +49,7 @@ describe('stateMachine', () => {
     expect(r.context.qty).toBe(1);
     const body = r.actions.map((a) => (a.type === 'SEND_TEXT' ? a.body : '')).join(' ');
     expect(body).not.toMatch(/how many/i);
-    expect(body).toMatch(/name/i);
+    expect(body).toBe(NAME_QUESTION_MESSAGE);
   });
 
   test('legacy AWAITING_QTY + any reply → AWAITING_NAME with qty fixed to 1', () => {
@@ -56,7 +60,7 @@ describe('stateMachine', () => {
     );
     expect(r.nextState).toBe(ConversationState.AWAITING_NAME);
     expect(r.context.qty).toBe(1);
-    expect(r.actions.map((a) => (a.type === 'SEND_TEXT' ? a.body : '')).join(' ')).toMatch(/name/i);
+    expect(r.actions.map((a) => (a.type === 'SEND_TEXT' ? a.body : '')).join(' ')).toBe(NAME_QUESTION_MESSAGE);
   });
 
   test('legacy AWAITING_QTY + quantity phrase ignores quantity', () => {
@@ -89,6 +93,7 @@ describe('stateMachine', () => {
     expect(r.context.qty).toBe(1);
     const body = r.actions.map((a) => (a.type === 'SEND_TEXT' ? a.body : '')).join(' ');
     expect(body).not.toMatch(/quantity|how many/i);
+    expect(body).toBe(NAME_QUESTION_MESSAGE);
   });
 
   test('18: parseFullAddress extracts street, city, state and 6-digit pincode', () => {
@@ -136,6 +141,7 @@ describe('stateMachine', () => {
     state = r.nextState;
     ctx = r.context;
     expect(state).toBe(ConversationState.AWAITING_ADDRESS);
+    expect(r.actions).toEqual([{ type: 'SEND_TEXT', body: FULL_ADDRESS_QUESTION_MESSAGE }]);
 
     // One combined address reply → parse + CREATE_ORDER
     r = transition(
@@ -163,6 +169,41 @@ describe('stateMachine', () => {
     expect(r.actions.some((a) => a.type === 'RUN_PAYMENT_EXTRACTION')).toBe(true);
     expect(r.actions.some((a) => a.type === 'NOTIFY_DASHBOARD')).toBe(true);
     expect(r.actions.some((a) => a.type === 'SEND_TEXT')).toBe(false);
+  });
+
+  test('required customer-facing message snapshots stay exact', () => {
+    expect(NAME_QUESTION_MESSAGE).toBe('What name should we put on the order?');
+    expect(FULL_ADDRESS_QUESTION_MESSAGE).toBe(
+      'Please send your complete delivery address with house/flat, street/area, city, state and 6-digit pincode in one message.',
+    );
+    expect(FULL_ADDRESS_CORRECTION_MESSAGE).toBe(
+      'Please resend your complete address with house/flat, street/area, city, state and 6-digit pincode in one message.',
+    );
+    expect(unavailableSizeMessage(['38', '40', '42'])).toBe(
+      'That size is not available.\n\nAvailable sizes: 38, 40, 42\n\nPlease send one available size.',
+    );
+  });
+
+  test('invalid size uses exact unavailable-size message and does not ask quantity', () => {
+    const r = transition(
+      ConversationState.AWAITING_SIZE,
+      { type: 'TEXT', body: '46' },
+      { productId: 'prod123', availableSizes: ['38', '40', '42'] },
+    );
+    expect(r.nextState).toBe(ConversationState.AWAITING_SIZE);
+    expect(r.actions).toEqual([{ type: 'SEND_TEXT', body: unavailableSizeMessage(['38', '40', '42']) }]);
+    expect(JSON.stringify(r.actions)).not.toMatch(/how many|quantity|pcs|stock/i);
+  });
+
+  test('invalid combined address uses exact resend message and no field-specific pincode prompt', () => {
+    const r = transition(
+      ConversationState.AWAITING_ADDRESS,
+      { type: 'TEXT', body: 'House 12, Panipat, Haryana' },
+      { productId: 'prod123', size: '42', qty: 1, customerName: 'Madhav' },
+    );
+    expect(r.nextState).toBe(ConversationState.AWAITING_ADDRESS);
+    expect(r.actions).toEqual([{ type: 'SEND_TEXT', body: FULL_ADDRESS_CORRECTION_MESSAGE }]);
+    expect(JSON.stringify(r.actions)).not.toMatch(/Please share city|Please include a valid|separately/i);
   });
 
   test('direct cancel command anywhere → resets to IDLE', () => {
@@ -327,16 +368,17 @@ describe('stateMachine', () => {
       { type: 'TEXT', body: 'Mumbai Maharashtra' },
       {},
     );
-    expect(r.nextState).toBe(ConversationState.AWAITING_PINCODE);
+    expect(r.nextState).toBe(ConversationState.AWAITING_ADDRESS);
+    expect(r.actions).toEqual([{ type: 'SEND_TEXT', body: FULL_ADDRESS_CORRECTION_MESSAGE }]);
   });
 
-  test('AWAITING_VERIFICATION + any text → reassurance, no transition', () => {
+  test('AWAITING_VERIFICATION + any text stays silent, no transition', () => {
     const r = transition(
       ConversationState.AWAITING_VERIFICATION,
       { type: 'TEXT', body: 'kya hua' },
       {},
     );
     expect(r.nextState).toBe(ConversationState.AWAITING_VERIFICATION);
-    expect(r.actions[0]?.type).toBe('SEND_TEXT');
+    expect(r.actions).toEqual([]);
   });
 });
