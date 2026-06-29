@@ -1,23 +1,40 @@
 {
-  "_readme": "Copy this file to .image-fixtures/manifest.json and put the referenced JPGs alongside it (gitignored). 'catalog' = the inventory products the verifier can choose from (include the CORRECT product for each case + its colour-distinct lookalikes). 'cases' = labelled customer photos with the product they SHOULD match. Then run: RUN_IMAGE_ACCURACY=1 GEMINI_API_KEY=... IMAGE_VERIFY_WITH_AI=true IMAGE_SEGMENTATION_ENABLED=true npx vitest run src/ai/imageAccuracy.test.ts",
+  "_readme": "Copy to .image-fixtures/manifest.json and put the referenced JPGs alongside it (gitignored). 'catalog' = inventory products the verifier may choose from — include BOTH colourways of any near-duplicate product. 'cases' = labelled customer photos (IG screenshots) with the product they SHOULD match; set expectedProductId=null for an ABSTAIN case (garbage/ambiguous must return none). 'mustNotMatchProductIds' = wrong colourways it must NEVER resolve to. Run: RUN_IMAGE_ACCURACY=1 GEMINI_API_KEY=... IMAGE_VERIFY_WITH_AI=true IMAGE_SEGMENTATION_ENABLED=true npx vitest run src/ai/imageAccuracy.test.ts",
   "catalog": [
-    { "id": "prod_white_cottan", "sku": "PURE-COTTAN-WHT", "name": "Pure Cottan (white, black floral)", "imageFile": "catalog_white_cottan.jpg", "baseColour": "white" },
-    { "id": "prod_teal_crape", "sku": "PURE-CRAPE-TEAL", "name": "Pure Crape (teal)", "imageFile": "catalog_teal_crape.jpg", "baseColour": "teal" },
-    { "id": "prod_white_organza", "sku": "SOFT-ORGANZA-WHT", "name": "Soft Organza (white, pink floral)", "imageFile": "catalog_white_organza.jpg", "baseColour": "white" },
-    { "id": "prod_mint_mul", "sku": "PURE-MUL-MINT", "name": "Pure Mul (mint)", "imageFile": "catalog_mint_mul.jpg", "baseColour": "mint" }
+    { "id": "muslin_ajrak_black", "sku": "MUSLIN-AJRAK", "name": "Muslin Ajrak (black+gold medallion)", "imageFile": "cat_muslin_ajrak.jpg", "baseColour": "black" },
+    { "id": "pure_mul_cream", "sku": "PURE-MUL-CREAM", "name": "Pure mul (cream multicolour-leaf)", "imageFile": "cat_pure_mul_cream.jpg", "baseColour": "cream" },
+    { "id": "pure_mul_mint", "sku": "PURE-MUL-MINT", "name": "Pure mul (mint multicolour-leaf)", "imageFile": "cat_pure_mul_mint.jpg", "baseColour": "mint" },
+    { "id": "gajji_silk_black", "sku": "GAJJI-BLACK", "name": "Gajji silk (black/white bandhani)", "imageFile": "cat_gajji_black.jpg", "baseColour": "black" },
+    { "id": "gajji_silk_red", "sku": "GAJJI-RED", "name": "Gajji silk (red/pink bandhani)", "imageFile": "cat_gajji_red.jpg", "baseColour": "red" }
   ],
   "cases": [
     {
-      "photoFile": "photo_white_cottan.jpg",
-      "expectedProductId": "prod_white_cottan",
-      "note": "white cottan w/ black floral embroidery — must NOT resolve to teal crape",
-      "mustNotMatchProductIds": ["prod_teal_crape", "prod_mint_mul"]
+      "photoFile": "q_gajji_black_ig.jpg",
+      "expectedProductId": "gajji_silk_black",
+      "note": "IG-live black/silver bandhani on rack — must pick BLACK Gajji, never RED",
+      "mustNotMatchProductIds": ["gajji_silk_red"]
     },
     {
-      "photoFile": "photo_white_organza.jpg",
-      "expectedProductId": "prod_white_organza",
-      "note": "white soft-organza w/ pink florals — must NOT resolve to mint mul",
-      "mustNotMatchProductIds": ["prod_mint_mul", "prod_teal_crape"]
+      "photoFile": "q_pure_mul_mint.jpg",
+      "expectedProductId": "pure_mul_mint",
+      "note": "mint multicolour-leaf — must NOT resolve to the cream colourway",
+      "mustNotMatchProductIds": ["pure_mul_cream"]
+    },
+    {
+      "photoFile": "q_pure_mul_cream.jpg",
+      "expectedProductId": "pure_mul_cream",
+      "note": "cream multicolour-leaf — must NOT resolve to the mint colourway",
+      "mustNotMatchProductIds": ["pure_mul_mint"]
+    },
+    {
+      "photoFile": "q_muslin_ajrak.jpg",
+      "expectedProductId": "muslin_ajrak_black",
+      "note": "black+gold medallion print"
+    },
+    {
+      "photoFile": "q_garbage.jpg",
+      "expectedProductId": null,
+      "note": "ABSTAIN: random / unrelated photo must return NONE (no hallucinated match)"
     }
   ]
 }

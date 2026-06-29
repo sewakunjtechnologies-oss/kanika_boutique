@@ -64,11 +64,18 @@ const envSchema = z.object({
   IMAGE_VERIFY_WITH_AI: envBool.default(false),
   // Top-K heuristic candidates handed to the Gemini selector for non-near-duplicate
   // images, and the minimum verifier confidence required to accept its pick.
-  // Default 5 (the cap): the colour-blind heuristic can rank a colour-distinct
-  // correct product low, so hand the verifier as many candidates as we allow to
-  // ensure the right product reaches it.
-  IMAGE_VERIFY_TOP_K: z.coerce.number().int().min(1).max(5).default(5),
+  // Default 8: near-duplicate COLOURWAYS (same print, different base colour) cluster
+  // together in the colour-blind heuristic, so a large K is required for BOTH
+  // colourways of a product to reach the verifier (the colour decider).
+  IMAGE_VERIFY_TOP_K: z.coerce.number().int().min(1).max(8).default(8),
   IMAGE_VERIFY_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.6),
+  // Strip app/IG chrome (status bar, play/volume, like/comment/share column, comment
+  // bar) from the QUERY image before it is segmented + sent to the verifier. Pure
+  // crop logic (no new dependency). Catalog studio photos are never UI-stripped.
+  IMAGE_STRIP_APP_UI: envBool.default(true),
+  // Garment-isolation confidence below which the verifier crop is treated as
+  // unusable (blank / not isolated) → NO MATCH rather than a weak guess.
+  IMAGE_CROP_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.35),
   // What to do with a NON-near-duplicate heuristic match when the AI verifier is
   // off or errors: 'confirm' keeps the one-tap customer confirmation gate (safe
   // default, no silent loss); 'silent' treats it as NO MATCH and sends nothing.

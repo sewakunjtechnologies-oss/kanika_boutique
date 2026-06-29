@@ -9,7 +9,7 @@ vi.mock('@kda/db', () => ({ prisma: {} }));
 import { env } from '../config/env';
 import { rankImageMatches, type ImageCandidate } from './imageMatcher';
 import { selectMatchingProduct } from './productMatcher';
-import { segmentGarmentOrOriginal } from './segmentation';
+import { prepareVerifierCrop } from './garmentCrop';
 
 // =============================================================================
 // Top-1 image-matching accuracy harness over a PRIVATE, LOCAL fixture corpus.
@@ -41,9 +41,10 @@ interface CatalogFixture {
 }
 interface CaseFixture {
   photoFile: string;
-  expectedProductId: string;
+  /** Correct product id, or null for an ABSTAIN case (garbage/ambiguous → must return none). */
+  expectedProductId: string | null;
   note?: string;
-  /** Product ids the photo must NEVER resolve to (e.g. colour-distinct lookalikes). */
+  /** Product ids the photo must NEVER resolve to (e.g. wrong colourway lookalikes). */
   mustNotMatchProductIds?: string[];
 }
 interface Manifest {
@@ -79,8 +80,8 @@ const candidates: ImageCandidate[] = manifest.catalog.map((c) => ({
   imageBuffer: enabled ? readFileSync(path.join(FIXTURE_DIR, c.imageFile)) : Buffer.alloc(0),
 }));
 
-// Mirrors matchProduct's NON-near-duplicate verifier path: heuristic rank →
-// top-K → garment segmentation → Gemini selector (verifier ON).
+// Mirrors matchProduct's NON-near-duplicate verifier path: heuristic shortlist →
+// top-K → UI-strip + garment crop → crop-confidence abstain → Gemini selector.
 async function verifierPick(queryBuffer: Buffer): Promise<string | null> {
   const ranked = await rankImageMatches(queryBuffer, candidates);
   const topK = ranked
@@ -88,18 +89,17 @@ async function verifierPick(queryBuffer: Buffer): Promise<string | null> {
     .map((s) => candidates.find((c) => c.productId === s.productId))
     .filter((c): c is ImageCandidate => Boolean(c));
 
-  const segQuery = await segmentGarmentOrOriginal(queryBuffer);
+  const queryCrop = await prepareVerifierCrop(queryBuffer, true);
+  if (queryCrop.confidence < env.IMAGE_CROP_MIN_CONFIDENCE) return null; // abstain
   const verifierCandidates = await Promise.all(
-    topK.map(async (c) => ({
-      productId: c.productId,
-      sku: c.sku,
-      imageBuffer: await segmentGarmentOrOriginal(c.imageBuffer),
-      mimeType: 'image/jpeg' as const,
-    })),
+    topK.map(async (c) => {
+      const crop = await prepareVerifierCrop(c.imageBuffer, false);
+      return { productId: c.productId, sku: c.sku, imageBuffer: crop.buffer, mimeType: 'image/jpeg' as const };
+    }),
   );
 
   const selection = await selectMatchingProduct({
-    queryBase64: segQuery.toString('base64'),
+    queryBase64: queryCrop.buffer.toString('base64'),
     queryMediaType: 'image/jpeg',
     candidates: verifierCandidates,
   });
@@ -114,27 +114,40 @@ describe('image matching top-1 accuracy (private corpus, verifier ON)', () => {
     let correct = 0;
     const failures: string[] = [];
 
+    let abstainCases = 0;
+    let abstainCorrect = 0;
+
     for (const c of manifest.cases) {
       const queryBuffer = readFileSync(path.join(FIXTURE_DIR, c.photoFile));
       const chosen = await verifierPick(queryBuffer);
-
-      // Hard safety: must never resolve to a forbidden (colour-distinct) lookalike,
-      // and must be either the correct product or a clean no-match — never a 3rd product.
       const forbidden = c.mustNotMatchProductIds ?? [];
-      const wrongProduct = chosen !== null && chosen !== c.expectedProductId;
+
+      // Hard safety: must never resolve to a forbidden (wrong-colourway) lookalike,
+      // and must be either the correct product or a clean no-match — never a 3rd product.
       if (chosen !== null && forbidden.includes(chosen)) {
-        failures.push(`${c.photoFile}: resolved to FORBIDDEN ${chosen} (expected ${c.expectedProductId})`);
-      } else if (wrongProduct) {
-        failures.push(`${c.photoFile}: resolved to WRONG ${chosen} (expected ${c.expectedProductId} or null)`);
+        failures.push(`${c.photoFile}: resolved to FORBIDDEN ${chosen} (expected ${c.expectedProductId ?? 'NONE'})`);
+      } else if (chosen !== null && chosen !== c.expectedProductId) {
+        failures.push(`${c.photoFile}: resolved to WRONG ${chosen} (expected ${c.expectedProductId ?? 'NONE'} or null)`);
       }
-      if (chosen === c.expectedProductId) correct += 1;
+
+      if (c.expectedProductId === null) {
+        // Abstain case: a garbage/ambiguous query MUST return none (no hallucination).
+        abstainCases += 1;
+        if (chosen === null) abstainCorrect += 1;
+        else failures.push(`${c.photoFile}: ABSTAIN case but resolved to ${chosen}`);
+      } else if (chosen === c.expectedProductId) {
+        correct += 1;
+      }
     }
 
+    const matchCases = manifest.cases.length - abstainCases;
     // eslint-disable-next-line no-console
-    console.log(`[image-accuracy] top-1 ${correct}/${manifest.cases.length}; safety failures: ${failures.length}`);
-    // Never auto-pick a wrong product (the production safety contract).
+    console.log(`[image-accuracy] top-1 ${correct}/${matchCases}; abstain ${abstainCorrect}/${abstainCases}; safety failures: ${failures.length}`);
+    // Never auto-pick a wrong/forbidden product, never hallucinate on abstain cases.
     expect(failures, failures.join('\n')).toEqual([]);
-    // And we expect the verifier to positively match the corpus.
-    expect(correct).toBe(manifest.cases.length);
-  }, 120_000);
+    // Verifier must positively match every labelled (non-abstain) fixture, incl. the
+    // correct COLOURWAY for near-duplicate products.
+    expect(correct).toBe(matchCases);
+    expect(abstainCorrect).toBe(abstainCases);
+  }, 180_000);
 });

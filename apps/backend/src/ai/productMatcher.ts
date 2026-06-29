@@ -24,7 +24,7 @@ import {
   type ImageCandidate,
   type ImageViewBox,
 } from './imageMatcher';
-import { segmentGarmentOrOriginal } from './segmentation';
+import { prepareVerifierCrop } from './garmentCrop';
 
 export const PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.5;
 export const MEDIUM_PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.5;
@@ -194,20 +194,22 @@ export async function verifyProductMatch(input: {
 }
 
 const SELECT_SYSTEM_PROMPT = `You match a customer's garment photo to a boutique's catalog of Indian ethnic wear.
-IMAGE 1 is the customer's photo. The following images are candidate catalog products, each preceded by a line "CANDIDATE id=<productId>".
-Decide which ONE candidate (if any) is the SAME physical product as the customer's photo.
-Ignore lighting, crop, resolution, background, screenshot UI, and model-worn vs flat — judge ONLY the garment.
+IMAGE 1 is the customer's photo (it may be an Instagram/app screenshot — IGNORE any leftover UI such as a centred play button, status bar, like/comment icons, or other garments on a rack behind; judge ONLY the single garment the customer is showing).
+The following images are candidate catalog products, each preceded by a line "CANDIDATE id=<productId>".
+Decide which ONE candidate (if any) is the SAME physical product as the customer's garment.
+
+The catalog often contains NEAR-DUPLICATE COLOURWAYS: two products with the SAME print/pattern that differ ONLY by base fabric colour (e.g. cream vs mint, black vs red). You MUST pick the correct colourway.
 
 Apply these rules IN ORDER:
-1. BASE FABRIC COLOUR FIRST. Identify the dominant base/background fabric colour of the customer garment (e.g. white / off-white / cream / ivory vs teal / mint / blue / pink / black, etc.).
-   - A white / off-white / cream / ivory garment can NEVER be the same product as a coloured (teal, mint, green, blue, pink, yellow, red, black …) garment, and vice-versa.
-   - Reject any candidate whose base fabric colour differs from the customer garment's base colour, even if the print/pattern looks similar. Do this BEFORE comparing print.
-2. PRINT / PATTERN. Among the colour-compatible candidates, compare the print/embroidery: motif type (floral / geometric / stripe / checks), motif colour, scale, layout, and neckline / sleeve / border design.
+1. BASE FABRIC COLOUR. Identify the dominant base/background fabric colour of the customer garment (e.g. white / off-white / cream / ivory / black / teal / mint / blue / pink / red).
+   - Treat lighting / white-balance / exposure differences as NON-disqualifying (a dim or warm photo of a black garment is still black; of a cream garment is still cream).
+   - But REJECT a true COLOURWAY mismatch: cream ≠ mint, black ≠ red, white ≠ teal, etc. A candidate whose base colour is a genuinely different colour is NOT the same product, even if the print is identical.
+2. PRINT / PATTERN. Among the colour-compatible candidates, compare the print/embroidery: motif type (floral / geometric / bandhani / medallion / stripe / checks), motif colour, scale, layout, and neckline / sleeve / border design.
 3. A different base colour OR a different print/pattern means it is NOT the same product.
 
-If no candidate passes BOTH the colour gate and the print check, return matchedProductId = null.
-Be strict: when unsure, return null. Prefer null over a colour-mismatched guess.
-matchedProductId MUST be exactly one of the provided candidate ids, or null.
+Pick the SINGLE best candidate that passes BOTH the colour rule and the print check. If none clearly passes both, return matchedProductId = null.
+Be strict: when unsure, return null. Prefer null over a colourway-mismatched guess.
+matchedProductId MUST be EXACTLY one of the provided candidate ids, or null. Never invent an id; never return an id that is not in the candidate list.
 Return ONLY JSON: { "matchedProductId": string|null, "confidence": 0.0-1.0, "reasoning": "brief, state the base colour you saw" }`;
 
 export interface ProductSelectCandidate {
@@ -425,28 +427,43 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
           .filter((x): x is { score: ImageMatchScore; image: CatalogImageCandidate } => x !== null);
 
         if (topK.length > 0) {
-          // Garment segmentation: strip the shared studio background from the
-          // customer image + each candidate before the verifier compares them, so
-          // the backdrop can't collapse different garments. No-op (original image)
-          // when disabled or on failure. The heuristic fast path above already ran
-          // on the ORIGINAL frames, so EXACT/NEAR_DUPLICATE screenshots can't regress.
-          const segmentedQuery = await segmentGarmentOrOriginal(queryBuffer);
-          const querySegmented = segmentedQuery !== queryBuffer;
+          // Preprocess BOTH sides before the verifier: strip app/IG chrome from the
+          // customer screenshot, segment the garment out of the studio background /
+          // rack / model. No-op (original image) when disabled or on failure. The
+          // heuristic fast path above already ran on the ORIGINAL frames, so
+          // EXACT/NEAR_DUPLICATE screenshots can't regress.
+          const queryCrop = await prepareVerifierCrop(queryBuffer, true);
+          // Crop-confidence abstain: a blank / non-isolated query crop must NOT be
+          // guessed at — return NO MATCH (silent) instead.
+          if (queryCrop.confidence < env.IMAGE_CROP_MIN_CONFIDENCE) {
+            botLog('IMAGE_MATCH_AI_SELECT', {
+              heuristicTopSku: best.sku,
+              heuristicMatchType: best.matchType,
+              selectedProductId: null,
+              selectionConfidence: 0,
+              minConfidence: env.IMAGE_VERIFY_MIN_CONFIDENCE,
+              accepted: false,
+              reason: 'low_crop_confidence',
+              cropConfidence: queryCrop.confidence,
+            });
+            return noConfidentMatch(best, candidates, bestSecondMargin, confidenceBand, 'low_crop_confidence');
+          }
+          const queryUsedCrop = queryCrop.buffer !== queryBuffer;
           const verifierCandidates = await Promise.all(
             topK.map(async ({ score, image }) => {
-              const segmented = await segmentGarmentOrOriginal(image.imageBuffer);
-              const isSegmented = segmented !== image.imageBuffer;
+              const crop = await prepareVerifierCrop(image.imageBuffer, false);
+              const usedCrop = crop.buffer !== image.imageBuffer;
               return {
                 productId: score.productId,
                 sku: score.sku,
-                imageBuffer: segmented,
-                mimeType: isSegmented ? ('image/jpeg' as const) : image.mimeType,
+                imageBuffer: crop.buffer,
+                mimeType: usedCrop ? ('image/jpeg' as const) : image.mimeType,
               };
             }),
           );
           const selection = await selectMatchingProduct({
-            queryBase64: querySegmented ? segmentedQuery.toString('base64') : input.imageBase64,
-            queryMediaType: querySegmented ? 'image/jpeg' : input.imageMediaType ?? 'image/jpeg',
+            queryBase64: queryUsedCrop ? queryCrop.buffer.toString('base64') : input.imageBase64,
+            queryMediaType: queryUsedCrop ? 'image/jpeg' : input.imageMediaType ?? 'image/jpeg',
             candidates: verifierCandidates,
           });
 

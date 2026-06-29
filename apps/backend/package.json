@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.5.1",
+    "@imgly/background-removal-node": "^1.4.5",
     "@kda/db": "*",
     "@kda/labels": "*",
     "@kda/shared": "*",
