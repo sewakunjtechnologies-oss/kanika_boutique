@@ -1,0 +1,23 @@
+{
+  "_readme": "Copy this file to .image-fixtures/manifest.json and put the referenced JPGs alongside it (gitignored). 'catalog' = the inventory products the verifier can choose from (include the CORRECT product for each case + its colour-distinct lookalikes). 'cases' = labelled customer photos with the product they SHOULD match. Then run: RUN_IMAGE_ACCURACY=1 GEMINI_API_KEY=... IMAGE_VERIFY_WITH_AI=true IMAGE_SEGMENTATION_ENABLED=true npx vitest run src/ai/imageAccuracy.test.ts",
+  "catalog": [
+    { "id": "prod_white_cottan", "sku": "PURE-COTTAN-WHT", "name": "Pure Cottan (white, black floral)", "imageFile": "catalog_white_cottan.jpg", "baseColour": "white" },
+    { "id": "prod_teal_crape", "sku": "PURE-CRAPE-TEAL", "name": "Pure Crape (teal)", "imageFile": "catalog_teal_crape.jpg", "baseColour": "teal" },
+    { "id": "prod_white_organza", "sku": "SOFT-ORGANZA-WHT", "name": "Soft Organza (white, pink floral)", "imageFile": "catalog_white_organza.jpg", "baseColour": "white" },
+    { "id": "prod_mint_mul", "sku": "PURE-MUL-MINT", "name": "Pure Mul (mint)", "imageFile": "catalog_mint_mul.jpg", "baseColour": "mint" }
+  ],
+  "cases": [
+    {
+      "photoFile": "photo_white_cottan.jpg",
+      "expectedProductId": "prod_white_cottan",
+      "note": "white cottan w/ black floral embroidery — must NOT resolve to teal crape",
+      "mustNotMatchProductIds": ["prod_teal_crape", "prod_mint_mul"]
+    },
+    {
+      "photoFile": "photo_white_organza.jpg",
+      "expectedProductId": "prod_white_organza",
+      "note": "white soft-organza w/ pink florals — must NOT resolve to mint mul",
+      "mustNotMatchProductIds": ["prod_mint_mul", "prod_teal_crape"]
+    }
+  ]
+}

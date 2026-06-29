@@ -41,3 +41,7 @@ packages/db/src/generated/
 coverage/
 apps/print-bridge/tmp-test-output/
 apps/print-bridge/print-output/
+
+# Private image-matching fixture corpus (product images only; never commit)
+.image-fixtures/
+apps/backend/.image-fixtures/

@@ -196,11 +196,19 @@ export async function verifyProductMatch(input: {
 const SELECT_SYSTEM_PROMPT = `You match a customer's garment photo to a boutique's catalog of Indian ethnic wear.
 IMAGE 1 is the customer's photo. The following images are candidate catalog products, each preceded by a line "CANDIDATE id=<productId>".
 Decide which ONE candidate (if any) is the SAME physical product as the customer's photo.
-Ignore lighting, crop, resolution, background, screenshot UI, and model-worn vs flat — judge ONLY the garment: dominant colour, print/embroidery pattern, motif, neckline/sleeve/border, fabric.
-A DIFFERENT colour or DIFFERENT print/pattern means it is NOT the same product. If no candidate clearly matches, return matchedProductId = null.
-Be strict: when unsure, return null.
+Ignore lighting, crop, resolution, background, screenshot UI, and model-worn vs flat — judge ONLY the garment.
+
+Apply these rules IN ORDER:
+1. BASE FABRIC COLOUR FIRST. Identify the dominant base/background fabric colour of the customer garment (e.g. white / off-white / cream / ivory vs teal / mint / blue / pink / black, etc.).
+   - A white / off-white / cream / ivory garment can NEVER be the same product as a coloured (teal, mint, green, blue, pink, yellow, red, black …) garment, and vice-versa.
+   - Reject any candidate whose base fabric colour differs from the customer garment's base colour, even if the print/pattern looks similar. Do this BEFORE comparing print.
+2. PRINT / PATTERN. Among the colour-compatible candidates, compare the print/embroidery: motif type (floral / geometric / stripe / checks), motif colour, scale, layout, and neckline / sleeve / border design.
+3. A different base colour OR a different print/pattern means it is NOT the same product.
+
+If no candidate passes BOTH the colour gate and the print check, return matchedProductId = null.
+Be strict: when unsure, return null. Prefer null over a colour-mismatched guess.
 matchedProductId MUST be exactly one of the provided candidate ids, or null.
-Return ONLY JSON: { "matchedProductId": string|null, "confidence": 0.0-1.0, "reasoning": "brief" }`;
+Return ONLY JSON: { "matchedProductId": string|null, "confidence": 0.0-1.0, "reasoning": "brief, state the base colour you saw" }`;
 
 export interface ProductSelectCandidate {
   productId: string;
