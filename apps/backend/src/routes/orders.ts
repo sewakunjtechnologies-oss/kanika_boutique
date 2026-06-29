@@ -437,7 +437,7 @@ ordersRouter.post(
 );
 
 // =============================================================================
-// REJECT PAYMENT — sends rejection, resets conversation to AWAITING_PAYMENT
+// REJECT PAYMENT — sends rejection, resets conversation to AWAITING_PAYMENT_SCREENSHOT
 // =============================================================================
 
 const RejectSchema = z.object({ reason: z.string().optional() });
@@ -485,7 +485,7 @@ ordersRouter.post(
       await prisma.conversation.update({
         where: { id: conv.id },
         data: {
-          state: ConversationState.AWAITING_PAYMENT,
+          state: ConversationState.AWAITING_PAYMENT_SCREENSHOT,
           contextJson: {
             ...ctx,
             orderId: order.id,

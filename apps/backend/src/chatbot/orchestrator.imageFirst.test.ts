@@ -37,6 +37,7 @@ vi.mock('@kda/db', () => {
       order: { findUnique: vi.fn(async () => null), findFirst: vi.fn(async () => null) },
       product: { findMany: vi.fn(async () => []), count: vi.fn(async () => 1) },
       customer: { upsert: vi.fn(async () => ({ id: 'cust1' })) },
+      dashboardNotification: { create: vi.fn(async () => ({ id: 'n1' })) },
     },
     ConversationState: mkEnum([
       'IDLE',
@@ -49,6 +50,7 @@ vi.mock('@kda/db', () => {
       'AWAITING_ADDRESS',
       'AWAITING_PINCODE',
       'AWAITING_PAYMENT',
+      'AWAITING_PAYMENT_SCREENSHOT',
       'AWAITING_VERIFICATION',
       'COMPLETED',
       'ABANDONED',
@@ -216,7 +218,7 @@ function outcome(score: number, imageUrl = 'https://cdn.test/p1.jpg') {
     candidates: [{ productId: 'p1', sku: 'SKU1', name: 'Blue Suit', imageUrl, confidence: score }],
     reasoning: 'match',
     meetsThreshold: score >= 0.5,
-    decision: score >= 0.5 ? 'candidate_confirmation' : 'no_match',
+    decision: score >= 0.5 ? 'auto_match' : 'no_match',
     bestSecondMargin: 1,
   };
 }
@@ -235,7 +237,7 @@ function availability(sizes: Array<{ size: string; stock: number }>) {
   };
 }
 
-describe('confirm-first image matching', () => {
+describe('direct image availability matching', () => {
   test('8: score below 0.50 → zero responses, no order', async () => {
     vi.mocked(matchProduct).mockResolvedValue(outcome(0.49) as never);
 
@@ -246,27 +248,26 @@ describe('confirm-first image matching', () => {
     expect(createOrderFromContext).not.toHaveBeenCalled();
   });
 
-  test('9 + 10 + 13: score >= 0.50 → exactly one candidate image + YES/NO, no lists/stock', async () => {
+  test('9 + 10 + 13: score >= 0.50 → exactly one availability image, no confirmation/lists/stock', async () => {
     vi.mocked(matchProduct).mockResolvedValue(outcome(0.5) as never);
     vi.mocked(getProductAvailability).mockResolvedValue(availability([{ size: '40', stock: 2 }]) as never);
 
     await handleInboundMessage(imageInput as never);
 
     expect(customerReplyCount()).toBe(1);
-    // One interactive button message: minimal body + YES/NO + image header.
-    expect(sendInteractiveButtons).toHaveBeenCalledWith(
+    expect(sendImage).toHaveBeenCalledWith(
       '919999999999',
-      'Confirm product',
-      [
-        { id: 'product_confirm_yes', title: 'YES' },
-        { id: 'product_confirm_no', title: 'NO' },
-      ],
-      expect.objectContaining({ headerImageUrl: expect.stringContaining('p1.jpg') }),
+      { link: expect.stringContaining('/uploads/p1.jpg') },
+      expect.stringContaining('Yes, it is available.'),
     );
-    // No alternative product list, no stock counts, no extra description.
+    expect(sendInteractiveButtons).not.toHaveBeenCalled();
     expect(sendInteractiveList).not.toHaveBeenCalled();
-    expect(allSentText()).not.toMatch(/pcs|stock|possible match|available products/i);
+    expect(allSentText()).toContain('Article: SKU1');
+    expect(allSentText()).toContain('Available sizes: 40');
+    expect(allSentText()).toContain('Please send your size.');
+    expect(allSentText()).not.toMatch(/pcs|stock|possible match|available products|confirm product/i);
     expect(createOrderFromContext).not.toHaveBeenCalled();
+    expect(h.conv.state).toBe('AWAITING_SIZE');
   });
 
   test('8b: unmatched image emits dashboard signal but sends nothing', async () => {

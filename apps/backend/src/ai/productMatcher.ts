@@ -19,8 +19,8 @@ import {
   type ImageCandidate,
 } from './imageMatcher';
 
-export const PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.65;
-export const MEDIUM_PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.45;
+export const PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.5;
+export const MEDIUM_PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.5;
 
 export type ProductMatchConfidenceBand = 'high' | 'medium' | 'low';
 export type ProductMatchDecision = 'auto_match' | 'candidate_confirmation' | 'no_match';
@@ -60,8 +60,8 @@ export interface ProductMatchOutcome extends ProductMatchResult {
 }
 
 export function classifyProductMatchConfidence(confidence: number): ProductMatchConfidenceBand {
-  if (confidence >= env.IMAGE_AUTO_MATCH_THRESHOLD) return 'high';
-  if (confidence >= env.IMAGE_CANDIDATE_MATCH_THRESHOLD) return 'medium';
+  if (confidence >= env.IMAGE_MATCH_THRESHOLD) return 'high';
+  if (confidence >= env.IMAGE_MATCH_THRESHOLD) return 'medium';
   return 'low';
 }
 
@@ -80,8 +80,7 @@ export function classifyImageMatchDecision(
   margin: number | null | undefined,
 ): ProductMatchDecision {
   const clearMargin = margin === null || margin === undefined || margin >= env.IMAGE_MIN_SCORE_MARGIN;
-  if (topScore >= env.IMAGE_AUTO_MATCH_THRESHOLD && clearMargin) return 'auto_match';
-  if (topScore >= env.IMAGE_CANDIDATE_MATCH_THRESHOLD) return 'candidate_confirmation';
+  if (topScore >= env.IMAGE_MATCH_THRESHOLD && clearMargin) return 'auto_match';
   return 'no_match';
 }
 
@@ -181,8 +180,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
         secondConfidence: second?.confidence ?? 0,
         bestSecondMargin,
         requiredMargin: env.IMAGE_MIN_SCORE_MARGIN,
-        autoThreshold: env.IMAGE_AUTO_MATCH_THRESHOLD,
-        candidateThreshold: env.IMAGE_CANDIDATE_MATCH_THRESHOLD,
+        threshold: env.IMAGE_MATCH_THRESHOLD,
         decision,
         averageHashSimilarity: best?.averageHashSimilarity ?? 0,
         differenceHashSimilarity: best?.differenceHashSimilarity ?? 0,
@@ -205,11 +203,11 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
 
     if (!env.CHATBOT_ENABLE_AI_IMAGE_MATCHING) {
       return {
-        matchedProductId: decision === 'candidate_confirmation' && best ? best.productId : null,
+        matchedProductId: null,
         confidence: best?.confidence ?? 0,
         reasoning: best
           ? hasClearBestMatch
-            ? `best perceptual match ${best.sku} requires customer confirmation`
+            ? `best perceptual match ${best.sku} was below auto-match threshold`
             : `best perceptual match ${best.sku} was too close to the second-best match`
           : 'no usable catalog images',
         meetsThreshold: false,
@@ -305,12 +303,10 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
           },
         ]
       : [];
-  const meetsThreshold = result.matchedProductId !== null && confidenceBand === 'high';
+  const meetsThreshold = result.matchedProductId !== null && result.confidence >= env.IMAGE_MATCH_THRESHOLD;
   const decision: ProductMatchDecision = meetsThreshold
     ? 'auto_match'
-    : result.matchedProductId && result.confidence >= env.IMAGE_CANDIDATE_MATCH_THRESHOLD
-      ? 'candidate_confirmation'
-      : 'no_match';
+    : 'no_match';
 
   logger.debug(
     {

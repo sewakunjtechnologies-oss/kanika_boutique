@@ -46,6 +46,7 @@ export function isOrderStatusActiveForConversation(status: OrderStatus): boolean
 
 export function stateRequiresPersistedOrder(state: ConversationState): boolean {
   return state === ConversationState.AWAITING_PAYMENT ||
+    state === ConversationState.AWAITING_PAYMENT_SCREENSHOT ||
     state === ConversationState.AWAITING_VERIFICATION;
 }
 

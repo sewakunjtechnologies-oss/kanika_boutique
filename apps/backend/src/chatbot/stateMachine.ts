@@ -70,6 +70,13 @@ export interface OrderContext {
   activeFlowVersion?: number;
   /** WhatsApp media ID of the photo that owns the current product-match flow. */
   activeMediaId?: string;
+  activeFlowId?: string;
+  latestInboundTimestamp?: string;
+  activeProductMediaId?: string;
+  activeProductMessageId?: string;
+  activeProductReceivedAt?: string;
+  selectedProductId?: string;
+  selectedSize?: string;
   /** Latest processed inbound WhatsApp message id for this conversation. */
   latestInboundMessageId?: string;
 }
@@ -168,7 +175,7 @@ export const NEW_PRODUCT_REQUEST_MESSAGE =
   'No problem. Please send the new product photo or article number you want to order.';
 
 export const PRODUCT_REJECTED_MESSAGE =
-  "No problem. I won't continue with this product. Please send another product photo/article number, or reply 'Show available products'.";
+  "No problem. I won't continue with this product. Please send another product photo or article number.";
 
 export const CANCEL_OR_CHANGE_MESSAGE =
   'Do you want to cancel the order completely or choose another product?\nReply 1 for Cancel order, 2 for Choose another product.';
@@ -300,6 +307,7 @@ export function transition(
       return handlePincode(event, context);
 
     case ConversationState.AWAITING_PAYMENT:
+    case ConversationState.AWAITING_PAYMENT_SCREENSHOT:
       return handlePayment(event, context);
 
     case ConversationState.AWAITING_VERIFICATION:
@@ -331,6 +339,7 @@ function isProductChangeState(state: ConversationState): boolean {
     ConversationState.AWAITING_ADDRESS,
     ConversationState.AWAITING_PINCODE,
     ConversationState.AWAITING_PAYMENT,
+    ConversationState.AWAITING_PAYMENT_SCREENSHOT,
   ] as ConversationState[]).includes(state);
 }
 
@@ -345,6 +354,7 @@ function isAmbiguousCancelState(state: ConversationState): boolean {
     ConversationState.AWAITING_ADDRESS,
     ConversationState.AWAITING_PINCODE,
     ConversationState.AWAITING_PAYMENT,
+    ConversationState.AWAITING_PAYMENT_SCREENSHOT,
   ] as ConversationState[]).includes(state);
 }
 
@@ -648,71 +658,14 @@ function handleSize(event: ChatEvent, context: OrderContext): TransitionResult {
 }
 
 function handleQty(event: ChatEvent, context: OrderContext): TransitionResult {
-  if (event.type !== 'TEXT') {
-    return {
-      nextState: ConversationState.AWAITING_QTY,
-      context,
-      actions: [{ type: 'SEND_TEXT', body: 'Please enter a quantity (number).' }],
-    };
-  }
-  const qty = parseQuantity(event.body);
-  if (!Number.isFinite(qty) || qty < 1 || qty > 50) {
-    return {
-      nextState: ConversationState.AWAITING_QTY,
-      context,
-      actions: [{ type: 'SEND_TEXT', body: 'Please enter a number between 1 and 50.' }],
-    };
-  }
-  // The orchestrator will check stock and dispatch SUGGEST_ALTERNATIVES if OOS.
+  void event;
+  // Legacy self-heal: previous deployments could leave a conversation in
+  // AWAITING_QTY. Approved production flow is quantity=1, so never ask quantity.
   return {
     nextState: ConversationState.AWAITING_NAME,
-    context: { ...context, qty },
-    actions: [{ type: 'SEND_TEXT', body: 'Perfect. What name should we put on the order?' }],
+    context: { ...context, qty: 1 },
+    actions: [{ type: 'SEND_TEXT', body: 'What name should we put on the order?' }],
   };
-}
-
-function parseQuantity(text: string): number {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return Number.NaN;
-
-  const digitMatch = normalized.match(/\b([1-9]\d?)\b/);
-  if (digitMatch?.[1]) return Number.parseInt(digitMatch[1], 10);
-
-  const compactDigitMatch = normalized.match(/([1-9]\d?)\s*(pc|pcs|piece|pieces|qty|quantity)\b/);
-  if (compactDigitMatch?.[1]) return Number.parseInt(compactDigitMatch[1], 10);
-
-  const words: Record<string, number> = {
-    one: 1,
-    single: 1,
-    ek: 1,
-    two: 2,
-    do: 2,
-    three: 3,
-    teen: 3,
-    four: 4,
-    char: 4,
-    chaar: 4,
-    five: 5,
-    paanch: 5,
-    panch: 5,
-    six: 6,
-    che: 6,
-    chhe: 6,
-    seven: 7,
-    saat: 7,
-    eight: 8,
-    aath: 8,
-    nine: 9,
-    nau: 9,
-    ten: 10,
-    dus: 10,
-  };
-  for (const token of normalized.split(/[^a-z]+/).filter(Boolean)) {
-    const value = words[token];
-    if (value !== undefined) return value;
-  }
-
-  return Number.NaN;
 }
 
 function handleName(event: ChatEvent, context: OrderContext): TransitionResult {
@@ -798,7 +751,7 @@ function handleAddress(event: ChatEvent, context: OrderContext): TransitionResul
 
   // Address is complete — create the order (quantity is always 1).
   return {
-    nextState: ConversationState.AWAITING_PAYMENT,
+    nextState: ConversationState.AWAITING_PAYMENT_SCREENSHOT,
     context: {
       ...context,
       qty: 1,
@@ -835,7 +788,7 @@ function handlePincode(event: ChatEvent, context: OrderContext): TransitionResul
   const state = tokens.slice(1).join(' ') || tokens[0] || '';
 
   return {
-    nextState: ConversationState.AWAITING_PAYMENT,
+    nextState: ConversationState.AWAITING_PAYMENT_SCREENSHOT,
     context: { ...context, pincode, city, state },
     actions: [{ type: 'CREATE_ORDER' }],
   };
@@ -850,22 +803,13 @@ function handlePayment(event: ChatEvent, context: OrderContext): TransitionResul
       actions: [
         { type: 'RUN_PAYMENT_EXTRACTION', mediaId },
         { type: 'NOTIFY_DASHBOARD', event: 'payment_received' },
-        {
-          type: 'SEND_TEXT',
-          body: "Got it! Your payment is being verified. We'll confirm in 2 hours.",
-        },
       ],
     };
   }
   return {
-    nextState: ConversationState.AWAITING_PAYMENT,
+    nextState: ConversationState.AWAITING_PAYMENT_SCREENSHOT,
     context,
-    actions: [
-      {
-        type: 'SEND_TEXT',
-        body: `Please send a screenshot of your UPI payment of ₹${context.total ?? '?'} once done.`,
-      },
-    ],
+    actions: [],
   };
 }
 

@@ -69,7 +69,11 @@ async function handleMessagesValue(value: import('./types').MessagesValue): Prom
   const contactsByWaId = indexContacts(value.contacts);
 
   for (const msg of value.messages ?? []) {
-    await persistInboundMessage(msg, contactsByWaId.get(msg.from)?.profile?.name ?? null);
+    await persistInboundMessage(
+      msg,
+      contactsByWaId.get(msg.from)?.profile?.name ?? null,
+      value.metadata?.phone_number_id ?? null,
+    );
   }
 
   for (const status of value.statuses ?? []) {
@@ -77,7 +81,11 @@ async function handleMessagesValue(value: import('./types').MessagesValue): Prom
   }
 }
 
-async function persistInboundMessage(msg: IncomingMessage, contactName: string | null): Promise<void> {
+async function persistInboundMessage(
+  msg: IncomingMessage,
+  contactName: string | null,
+  receiverPhoneNumberId: string | null,
+): Promise<void> {
   const customer = await upsertCustomer(msg.from, contactName);
   const conversation = await getOrCreateConversation(customer.id);
 
@@ -154,6 +162,7 @@ async function persistInboundMessage(msg: IncomingMessage, contactName: string |
         conversationId: conversation.id,
         customerId: customer.id,
         customerWhatsappNumber: msg.from,
+        receiverPhoneNumberId,
         message: msg,
       });
     });

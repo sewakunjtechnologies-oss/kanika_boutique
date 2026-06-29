@@ -27,6 +27,7 @@ describe('orderContextGuard', () => {
 
   test('requires a persisted order only in payment states', () => {
     expect(stateRequiresPersistedOrder(ConversationState.AWAITING_PAYMENT)).toBe(true);
+    expect(stateRequiresPersistedOrder(ConversationState.AWAITING_PAYMENT_SCREENSHOT)).toBe(true);
     expect(stateRequiresPersistedOrder(ConversationState.AWAITING_VERIFICATION)).toBe(true);
     expect(stateRequiresPersistedOrder(ConversationState.AWAITING_QTY)).toBe(false);
     expect(stateRequiresPersistedOrder(ConversationState.IDLE)).toBe(false);

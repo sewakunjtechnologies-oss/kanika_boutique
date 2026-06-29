@@ -25,6 +25,7 @@ enum ConversationState {
   AWAITING_ADDRESS
   AWAITING_PINCODE
   AWAITING_PAYMENT
+  AWAITING_PAYMENT_SCREENSHOT
   AWAITING_VERIFICATION
   COMPLETED
   ABANDONED
@@ -260,6 +261,10 @@ model Order {
   shippingState            String
   shippingPincode          String
   paymentScreenshotUrl     String?
+  paymentScreenshotMediaId String?
+  paymentSubmittedAt       DateTime?
+  paymentCustomerWaId      String?
+  paymentReceiverPhoneId   String?
   paymentExtractedAmount   Decimal?            @db.Decimal(12, 2)
   paymentExtractedUtr      String?
   paymentExtractedReceiver String?
@@ -284,6 +289,7 @@ model Order {
   items          OrderItem[]
   stockMovements StockMovement[]
   printJobs      PrintJob[]
+  notifications  DashboardNotification[]
 
   @@index([customerId])
   @@index([orderNumber])
@@ -292,6 +298,27 @@ model Order {
   @@index([approvedById])
   @@index([rejectedById])
   @@index([reservationExpiresAt])
+}
+
+model DashboardNotification {
+  id         String    @id @default(cuid())
+  type       String
+  title      String
+  body       String?
+  entityType String?
+  entityId   String?
+  orderId    String?
+  metadata   Json      @default("{}")
+  readAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([type])
+  @@index([entityType, entityId])
+  @@index([orderId])
+  @@index([readAt])
+  @@index([createdAt])
 }
 
 model OrderItem {

@@ -58,20 +58,19 @@ const envSchema = z.object({
   CHATBOT_DEBUG: envBool.default(false),
   CHATBOT_ENABLE_AI_IMAGE_MATCHING: envBool.default(false),
   // Product-photo matching policy. Higher score = better visual match.
-  // Auto-match replies to the customer only when score and runner-up margin are both strong.
-  // Single confirm-first threshold: any top distinct product at/above this score
-  // is sent to the customer as a photo + YES/NO to confirm. Below it: silent.
-  IMAGE_AUTO_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
-  IMAGE_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).optional(),
-  // Retained for backward-compatible env parsing / matcher banding.
-  IMAGE_CANDIDATE_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
+  // Canonical production threshold: >= threshold + clear runner-up margin sends
+  // one availability reply. Below it: stay silent and never create an order.
+  IMAGE_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
+  // Retained for backward-compatible env parsing; synced to IMAGE_MATCH_THRESHOLD below.
+  IMAGE_AUTO_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).optional(),
+  IMAGE_CANDIDATE_MATCH_THRESHOLD: z.coerce.number().min(0).max(1).optional(),
   IMAGE_MIN_SCORE_MARGIN: z.coerce.number().min(0).max(1).default(0.08),
   // Deprecated aliases retained so older deployments do not fail env parsing.
   IMAGE_MATCH_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).optional(),
   IMAGE_MATCH_SECOND_BEST_MIN_MARGIN: z.coerce.number().min(0).max(1).optional(),
-  // Kept for backward-compatible env parsing. Production policy is now to send
-  // a customer-facing fallback for unmatched/low-confidence photos.
-  REPLY_ON_UNMATCHED_IMAGE: envBool.default(true),
+  // Kept for backward-compatible env parsing. Approved production policy is
+  // silent for unmatched/low-confidence photos.
+  REPLY_ON_UNMATCHED_IMAGE: envBool.default(false),
   ORDER_RESERVATION_MINUTES: z.coerce.number().int().positive().default(120),
   SUPPORT_NUDGE_DELAY_MINUTES: z.coerce.number().int().positive().default(3),
   SUPPORT_PHONE_NUMBER: z.string().default(''),
@@ -155,12 +154,10 @@ if (!parsed.success) {
 
 const envData = parsed.data;
 envData.AUTO_PRINT_ORDER_LABELS ??= envData.AUTO_PRINT_ON_PAYMENT_APPROVAL;
-// IMAGE_MATCH_THRESHOLD is the canonical single confirm-first threshold; when set
-// it drives the auto/candidate thresholds so both stay in sync.
-if (envData.IMAGE_MATCH_THRESHOLD !== undefined) {
-  envData.IMAGE_AUTO_MATCH_THRESHOLD = envData.IMAGE_MATCH_THRESHOLD;
-  envData.IMAGE_CANDIDATE_MATCH_THRESHOLD = envData.IMAGE_MATCH_THRESHOLD;
-}
+// IMAGE_MATCH_THRESHOLD is the canonical single threshold; old env names are
+// accepted but always normalized to the approved value.
+envData.IMAGE_AUTO_MATCH_THRESHOLD = envData.IMAGE_MATCH_THRESHOLD;
+envData.IMAGE_CANDIDATE_MATCH_THRESHOLD = envData.IMAGE_MATCH_THRESHOLD;
 envData.IMAGE_MATCH_MIN_CONFIDENCE ??= envData.IMAGE_AUTO_MATCH_THRESHOLD;
 envData.IMAGE_MATCH_SECOND_BEST_MIN_MARGIN ??= envData.IMAGE_MIN_SCORE_MARGIN;
 envData.SESSION_COOKIE_SECURE ??= envData.NODE_ENV === 'production';
@@ -218,6 +215,9 @@ if (parsed.data.NODE_ENV === 'production') {
   }
   if (envData.AUTO_PRINT_ORDER_LABELS && !cleaned.PRINT_AGENT_TOKEN) {
     addProductionError('PRINT_AGENT_TOKEN', 'is required in production when AUTO_PRINT_ORDER_LABELS=true');
+  }
+  if (!cleaned.PAYMENT_QR_IMAGE_URL) {
+    addProductionError('PAYMENT_QR_IMAGE_URL', 'is required in production for the WhatsApp checkout QR image');
   }
   if (cleaned.PRINT_AGENT_TOKEN && cleaned.PRINT_AGENT_TOKEN.length < 32) {
     addProductionError('PRINT_AGENT_TOKEN', 'must be at least 32 characters when configured');

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { prisma, ConversationState, Intent, MessageType, OrderStatus, Prisma, type Conversation } from '@kda/db';
 import { botError, botLog, logger } from '../logger';
 import {
@@ -60,6 +61,7 @@ interface OrchestratorInput {
   conversationId: string;
   customerId: string;
   customerWhatsappNumber: string;
+  receiverPhoneNumberId?: string | null;
   message: IncomingMessage;
 }
 
@@ -78,7 +80,11 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
 
   const event = await messageToEvent(input.message);
 
-  if (event.type === 'TEXT') {
+  if (
+    event.type === 'TEXT' &&
+    conv.state !== ConversationState.AWAITING_PAYMENT &&
+    conv.state !== ConversationState.AWAITING_PAYMENT_SCREENSHOT
+  ) {
     const supportHandled = await handleSupportReply({
       conversationId: input.conversationId,
       customerWhatsappNumber: input.customerWhatsappNumber,
@@ -182,6 +188,7 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
   if (
     event.type === 'IMAGE' &&
     conv.state !== ConversationState.AWAITING_PAYMENT &&
+    conv.state !== ConversationState.AWAITING_PAYMENT_SCREENSHOT &&
     conv.state !== ConversationState.AWAITING_VERIFICATION
   ) {
     await processInboundProductImage(input, event.mediaId, extractRequestedSize(event.caption ?? ''));
@@ -376,6 +383,7 @@ function isProductChangeFlowState(state: ConversationState): boolean {
     ConversationState.AWAITING_ADDRESS,
     ConversationState.AWAITING_PINCODE,
     ConversationState.AWAITING_PAYMENT,
+    ConversationState.AWAITING_PAYMENT_SCREENSHOT,
   ] as ConversationState[]).includes(state);
 }
 
@@ -390,6 +398,7 @@ function isAmbiguousCancelFlowState(state: ConversationState): boolean {
     ConversationState.AWAITING_ADDRESS,
     ConversationState.AWAITING_PINCODE,
     ConversationState.AWAITING_PAYMENT,
+    ConversationState.AWAITING_PAYMENT_SCREENSHOT,
   ] as ConversationState[]).includes(state);
 }
 
@@ -586,7 +595,6 @@ async function resumeFreshOrderFromPausedContext(
   });
 
   if (mediaId) {
-    await sendText(input.customerWhatsappNumber, 'Starting a fresh order from this product photo...');
     const outcome = await runProductMatchOutcome(mediaId);
     await respondToProductMatchOutcome(input, outcome, extractRequestedSize(text), mediaId);
     return;
@@ -602,7 +610,7 @@ async function resumeFreshOrderFromPausedContext(
 
   await sendText(
     input.customerWhatsappNumber,
-    'Sure. Please send the product photo or article number so I can check availability.',
+    PRODUCT_FIRST_MESSAGE,
   );
 }
 
@@ -708,12 +716,6 @@ async function reconcileOrderContextBeforeTurn(
 async function messageToEvent(msg: IncomingMessage): Promise<ChatEvent> {
   switch (msg.type) {
     case 'text':
-      {
-        const referencedMediaId = await findReferencedImageMediaId(msg.context?.id);
-        if (referencedMediaId && detectCustomerIntent(msg.text.body).shouldTriggerBot) {
-          return { type: 'IMAGE', mediaId: referencedMediaId, caption: msg.text.body };
-        }
-      }
       return { type: 'TEXT', body: msg.text.body };
     case 'image':
       return { type: 'IMAGE', mediaId: msg.image.id, caption: msg.image.caption };
@@ -1042,7 +1044,7 @@ async function executeActions(
           if (!order) {
             logger.warn({ customerId: input.customerId }, 'no pending order found for payment screenshot');
             queue.length = 0;
-            result = { ...result, nextState: ConversationState.AWAITING_PAYMENT };
+            result = { ...result, nextState: ConversationState.AWAITING_PAYMENT_SCREENSHOT };
             await sendText(to, 'I could not find an active unpaid order. Please type "menu" to start again or "agent" for help.');
             break;
           }
@@ -1052,7 +1054,7 @@ async function executeActions(
           } catch (err) {
             logger.error({ err, orderId: order.id }, 'payment screenshot download failed');
             queue.length = 0;
-            result = { ...result, nextState: ConversationState.AWAITING_PAYMENT };
+            result = { ...result, nextState: ConversationState.AWAITING_PAYMENT_SCREENSHOT };
             await sendText(to, 'I could not download that screenshot. Please resend a clear payment screenshot.');
             break;
           }
@@ -1083,6 +1085,10 @@ async function executeActions(
               data: {
                 status: warnings.length > 0 ? OrderStatus.PAYMENT_REVIEW : OrderStatus.PAYMENT_RECEIVED,
                 paymentScreenshotUrl: downloaded.storedPath,
+                paymentScreenshotMediaId: action.mediaId,
+                paymentSubmittedAt: new Date(),
+                paymentCustomerWaId: input.customerWhatsappNumber,
+                paymentReceiverPhoneId: input.receiverPhoneNumberId ?? null,
                 paymentExtractedAmount: extractedAmount !== null
                   ? new Prisma.Decimal(extractedAmount)
                   : null,
@@ -1092,6 +1098,7 @@ async function executeActions(
               },
             });
             emitToDashboard('payment_received', { orderId: order.id });
+            await createPaymentReviewNotification(order.id, order.orderNumber, extractedUtr, warnings);
             await notifyAdminsOfPendingPayment(input, order, result.context, extractedUtr);
           } catch (err) {
             logger.error({ err, orderId: order.id }, 'payment extraction failed');
@@ -1100,6 +1107,10 @@ async function executeActions(
               data: {
                 status: OrderStatus.PAYMENT_REVIEW,
                 paymentScreenshotUrl: downloaded.storedPath,
+                paymentScreenshotMediaId: action.mediaId,
+                paymentSubmittedAt: new Date(),
+                paymentCustomerWaId: input.customerWhatsappNumber,
+                paymentReceiverPhoneId: input.receiverPhoneNumberId ?? null,
                 paymentExtractedAmount: null,
                 paymentExtractedUtr: null,
                 paymentExtractedReceiver: null,
@@ -1107,6 +1118,7 @@ async function executeActions(
               },
             });
             emitToDashboard('payment_received', { orderId: order.id, extractionFailed: true });
+            await createPaymentReviewNotification(order.id, order.orderNumber, null, ['payment_extraction_failed']);
             await notifyAdminsOfPendingPayment(input, order, result.context, null);
           }
           break;
@@ -1163,6 +1175,33 @@ async function notifyAdminsOfPendingPayment(
     }
   } catch (err) {
     botError('ERROR_DETAILS', err, { step: 'admin_payment_notification', orderId: order.id });
+  }
+}
+
+async function createPaymentReviewNotification(
+  orderId: string,
+  orderNumber: string,
+  utr: string | null,
+  warnings: string[],
+): Promise<void> {
+  try {
+    await prisma.dashboardNotification.create({
+      data: {
+        type: 'PAYMENT_AWAITING_APPROVAL',
+        title: `Payment awaiting approval for order #${orderNumber}`,
+        body: utr ? `UTR/reference: ${utr}` : 'Payment screenshot received.',
+        entityType: 'ORDER',
+        entityId: orderId,
+        orderId,
+        metadata: {
+          orderNumber,
+          utr,
+          warnings,
+        } as never,
+      },
+    });
+  } catch (err) {
+    logger.warn({ err, orderId }, 'failed to persist payment dashboard notification');
   }
 }
 
@@ -1232,7 +1271,7 @@ async function handleIdleCatalogInquiry(input: OrchestratorInput, event: ChatEve
   if (!matched) {
     await sendText(
       input.customerWhatsappNumber,
-      'Please send the product photo or article name/number so I can check availability.',
+      'Please send the product photo so I can check availability.',
     );
     return true;
   }
@@ -1561,7 +1600,7 @@ export function buildAvailableProductOptions(
     .slice(0, limit);
 }
 
-async function findAvailableProductOptions({
+async function _findAvailableProductOptions({
   size,
   excludedProductId,
   limit,
@@ -1647,27 +1686,27 @@ async function respondToProductMatchOutcome(
   sourceMediaId: string | null = null,
   flowVersion?: number,
 ): Promise<void> {
-  const threshold = env.IMAGE_AUTO_MATCH_THRESHOLD; // single confirm-first threshold (0.50)
-  // Use the top-scoring DISTINCT inventory product only.
-  const top = outcome?.candidates?.[0] ?? null;
-  const score = top?.confidence ?? outcome?.confidence ?? 0;
+  const threshold = env.IMAGE_MATCH_THRESHOLD;
+  const score = outcome?.confidence ?? 0;
 
-  // Confirm-first: any top distinct product at/above threshold is sent to the
-  // customer as a photo + YES/NO. No alternatives, no lists, no auto-order.
-  if (top && score >= threshold) {
-    const sent = await askCandidateProductMatchConfirmation(input, top, requestedSize, sourceMediaId, flowVersion);
-    if (sent) {
-      logImageMatchDecision(input, outcome, 'MATCHED', 'confirm_first_candidate');
-      return;
-    }
+  if (outcome?.matchedProductId && score >= threshold) {
+    logImageMatchDecision(input, outcome, 'MATCHED', 'direct_availability');
+    await beginOrderFromProduct(input, outcome.matchedProductId, requestedSize, {
+      activeFlowVersion: flowVersion,
+      activeMediaId: sourceMediaId ?? undefined,
+      activeProductMediaId: sourceMediaId ?? undefined,
+      lastMatchedImageMediaId: sourceMediaId ?? undefined,
+      matchConfidence: score,
+    });
+    return;
   }
 
   // Below 0.50 / no candidate / inactive product: send absolutely nothing.
-  logImageMatchDecision(input, outcome, 'SILENT_NO_MATCH', score < threshold ? 'below_threshold' : 'no_active_candidate');
+  logImageMatchDecision(input, outcome, 'SILENT_NO_MATCH', score < threshold ? 'below_threshold' : 'no_clear_match');
   emitToDashboard('image_unmatched', {
     conversationId: input.conversationId,
     score,
-    hasCandidate: Boolean(top),
+    hasCandidate: Boolean(outcome?.candidates?.[0]),
   });
   // Intentionally send nothing.
 }
@@ -1678,7 +1717,7 @@ async function respondToProductMatchOutcome(
  * description, stock, scores, alternatives or product lists. Returns false (to
  * stay silent) when the product is missing/inactive or the flow went stale.
  */
-async function askCandidateProductMatchConfirmation(
+async function _askCandidateProductMatchConfirmation(
   input: OrchestratorInput,
   candidate: ProductMatchCandidate,
   requestedSize: string | null,
@@ -1806,7 +1845,10 @@ async function handleSizeSelectionInput(
   // Stock confirmed — do NOT decrement here (reservation/deduction happens later).
   await prisma.conversation.update({
     where: { id: conv.id },
-    data: { state: ConversationState.AWAITING_NAME, contextJson: { ...ctx, size: chosen.size, qty: 1 } as never },
+    data: {
+      state: ConversationState.AWAITING_NAME,
+      contextJson: { ...ctx, size: chosen.size, selectedSize: chosen.size, qty: 1 } as never,
+    },
   });
   await sendText(input.customerWhatsappNumber, 'What name should we put on the order?');
   return true;
@@ -1851,6 +1893,7 @@ async function beginOrderFromProduct(
 
   const baseContext: OrderContext = {
     productId: availability.id,
+    selectedProductId: availability.id,
     productName: availability.name,
     productPrice: Number(availability.basePrice),
     qty: 1,
@@ -1882,16 +1925,16 @@ async function beginOrderFromProduct(
 
   // Availability message — NO stock counts. Optionally lead with the inventory image.
   const availabilityText =
-    `Available\n\n${availability.name}\n` +
+    `Yes, it is available.\n\n${availability.name}\n` +
     `Article: ${availability.sku}\n` +
     `Price: ₹${availability.basePrice}\n` +
-    `Available sizes: ${availableSizes.join(', ')}`;
+    `Available sizes: ${availableSizes.join(', ')}\n\n` +
+    'Please send your size.';
   const imageLink = toPublicImageLink(availability.imageUrl);
   if (imageLink) {
     await sendImage(input.customerWhatsappNumber, { link: imageLink }, availabilityText);
-    await sendSizePicker(input.customerWhatsappNumber, 'Please choose your size.', availableSizes);
   } else {
-    await sendSizePicker(input.customerWhatsappNumber, `${availabilityText}\n\nPlease choose your size.`, availableSizes);
+    await sendText(input.customerWhatsappNumber, availabilityText);
   }
 }
 
@@ -1909,7 +1952,7 @@ async function buildFaqAnswer(
       if (!ctx.productId) return 'Please send the product photo or article name/number so I can check the price.';
       return buildPriceAnswer(ctx);
     case 'payment':
-      return `Payment is accepted by UPI.\nUPI ID: ${settings.upiId}\nAfter payment, send the screenshot here for verification.`;
+      return 'After your order details are complete, I will send the payment QR here.';
     case 'cod':
       return 'COD is not enabled in this automation right now. Please use UPI payment so we can verify and confirm the order.';
     case 'delivery':
@@ -1930,16 +1973,16 @@ async function buildAvailabilityAnswer(ctx: OrderContext): Promise<string> {
   if (ctx.size && ctx.qty) {
     const stock = await checkStock(ctx.productId, ctx.size, ctx.qty);
     return stock.available
-      ? `Yes, size ${ctx.size} is available for ${ctx.qty} pc${ctx.qty === 1 ? '' : 's'}.`
-      : `Sorry, only ${stock.stock} pc${stock.stock === 1 ? '' : 's'} are available in size ${ctx.size}.`;
+      ? `Yes, size ${ctx.size} is available.`
+      : `Sorry, size ${ctx.size} is not available.`;
   }
 
   const availability = await getProductAvailability(ctx.productId);
   if (!availability) return 'This product is not available.';
   const available = availability.variants.filter((v) => v.stock > 0);
   if (available.length === 0) return 'This product is currently out of stock.';
-  const stockText = available.map((v) => `${v.size}: ${v.stock} pc${v.stock === 1 ? '' : 's'}`).join(', ');
-  return `Yes, available.\n${availability.name}\nStock by size: ${stockText}`;
+  const sizes = sortSizes([...new Set(available.map((v) => v.size))]);
+  return `Yes, it is available.\n${availability.name}\nAvailable sizes: ${sizes.join(', ')}`;
 }
 
 async function buildPriceAnswer(ctx: OrderContext): Promise<string> {
@@ -1984,7 +2027,7 @@ async function repeatCurrentPrompt(
       await sendText(to, 'Please share city, state, and 6-digit pincode.');
       return;
     case ConversationState.AWAITING_PAYMENT:
-      await sendText(to, `Please send the UPI payment screenshot for ₹${ctx.total ?? 'the order total'}.`);
+    case ConversationState.AWAITING_PAYMENT_SCREENSHOT:
       return;
     case ConversationState.AWAITING_VERIFICATION:
       await sendText(to, 'Your payment screenshot is with us for verification.');
@@ -2101,7 +2144,7 @@ function humanOrderStatus(status: OrderStatus): string {
   }
 }
 
-function sameSize(a: string, b: string): boolean {
+function _sameSize(a: string, b: string): boolean {
   return a.trim().toUpperCase() === b.trim().toUpperCase();
 }
 
@@ -2169,9 +2212,16 @@ async function startFreshImageFlow(input: OrchestratorInput, mediaId: string): P
   const conv = await prisma.conversation.findUnique({ where: { id: input.conversationId } });
   const prev = readOrderContext(conv?.contextJson);
   const flowVersion = (prev.activeFlowVersion ?? 0) + 1;
+  const receivedAt = new Date(Number(input.message.timestamp) * 1000);
+  const safeReceivedAt = Number.isFinite(receivedAt.getTime()) ? receivedAt : new Date();
   const freshContext: OrderContext = {
+    activeFlowId: randomUUID(),
     activeFlowVersion: flowVersion,
     activeMediaId: mediaId,
+    activeProductMediaId: mediaId,
+    activeProductMessageId: input.message.id,
+    activeProductReceivedAt: safeReceivedAt.toISOString(),
+    latestInboundTimestamp: input.message.timestamp,
     latestInboundMessageId: input.message.id,
     lastMatchedImageMediaId: mediaId,
   };

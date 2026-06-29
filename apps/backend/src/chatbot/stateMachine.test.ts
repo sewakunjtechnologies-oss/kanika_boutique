@@ -48,44 +48,47 @@ describe('stateMachine', () => {
     expect(body).toMatch(/name/i);
   });
 
-  test('AWAITING_QTY + valid number → AWAITING_NAME', () => {
+  test('legacy AWAITING_QTY + any reply → AWAITING_NAME with qty fixed to 1', () => {
     const r = transition(
       ConversationState.AWAITING_QTY,
       { type: 'TEXT', body: '2' },
       { productId: 'prod123', size: 'M' },
     );
     expect(r.nextState).toBe(ConversationState.AWAITING_NAME);
-    expect(r.context.qty).toBe(2);
+    expect(r.context.qty).toBe(1);
+    expect(r.actions.map((a) => (a.type === 'SEND_TEXT' ? a.body : '')).join(' ')).toMatch(/name/i);
   });
 
-  test('AWAITING_QTY + quantity phrase → AWAITING_NAME', () => {
+  test('legacy AWAITING_QTY + quantity phrase ignores quantity', () => {
     const r = transition(
       ConversationState.AWAITING_QTY,
       { type: 'TEXT', body: 'Pieces 2' },
       { productId: 'prod123', size: 'M' },
     );
     expect(r.nextState).toBe(ConversationState.AWAITING_NAME);
-    expect(r.context.qty).toBe(2);
+    expect(r.context.qty).toBe(1);
   });
 
-  test('AWAITING_QTY + word quantity → AWAITING_NAME', () => {
+  test('legacy AWAITING_QTY + word quantity ignores quantity', () => {
     const r = transition(
       ConversationState.AWAITING_QTY,
       { type: 'TEXT', body: 'two pieces' },
       { productId: 'prod123', size: 'M' },
     );
     expect(r.nextState).toBe(ConversationState.AWAITING_NAME);
-    expect(r.context.qty).toBe(2);
+    expect(r.context.qty).toBe(1);
   });
 
-  test('AWAITING_QTY + non-number → stays + asks again', () => {
+  test('legacy AWAITING_QTY + non-number still does not ask quantity', () => {
     const r = transition(
       ConversationState.AWAITING_QTY,
       { type: 'TEXT', body: 'many' },
       { productId: 'prod123', size: 'M' },
     );
-    expect(r.nextState).toBe(ConversationState.AWAITING_QTY);
-    expect(r.actions[0]?.type).toBe('SEND_TEXT');
+    expect(r.nextState).toBe(ConversationState.AWAITING_NAME);
+    expect(r.context.qty).toBe(1);
+    const body = r.actions.map((a) => (a.type === 'SEND_TEXT' ? a.body : '')).join(' ');
+    expect(body).not.toMatch(/quantity|how many/i);
   });
 
   test('18: parseFullAddress extracts street, city, state and 6-digit pincode', () => {
@@ -142,7 +145,7 @@ describe('stateMachine', () => {
     );
     state = r.nextState;
     ctx = r.context;
-    expect(state).toBe(ConversationState.AWAITING_PAYMENT);
+    expect(state).toBe(ConversationState.AWAITING_PAYMENT_SCREENSHOT);
     expect(ctx.city).toBe('Jaipur');
     expect(ctx.state).toBe('Rajasthan');
     expect(ctx.pincode).toBe('302021');
@@ -150,15 +153,16 @@ describe('stateMachine', () => {
     expect(r.actions[0]?.type).toBe('CREATE_ORDER');
   });
 
-  test('AWAITING_PAYMENT + image → AWAITING_VERIFICATION with RUN_PAYMENT_EXTRACTION + NOTIFY_DASHBOARD', () => {
+  test('AWAITING_PAYMENT_SCREENSHOT + image → AWAITING_VERIFICATION with RUN_PAYMENT_EXTRACTION + NOTIFY_DASHBOARD and no customer text', () => {
     const r = transition(
-      ConversationState.AWAITING_PAYMENT,
+      ConversationState.AWAITING_PAYMENT_SCREENSHOT,
       { type: 'IMAGE', mediaId: 'pay123' },
       { total: 2499 },
     );
     expect(r.nextState).toBe(ConversationState.AWAITING_VERIFICATION);
     expect(r.actions.some((a) => a.type === 'RUN_PAYMENT_EXTRACTION')).toBe(true);
     expect(r.actions.some((a) => a.type === 'NOTIFY_DASHBOARD')).toBe(true);
+    expect(r.actions.some((a) => a.type === 'SEND_TEXT')).toBe(false);
   });
 
   test('direct cancel command anywhere → resets to IDLE', () => {
@@ -311,7 +315,7 @@ describe('stateMachine', () => {
       { type: 'TEXT', body: 'Mumbai Maharashtra 400001' },
       { productId: 'p1' },
     );
-    expect(r.nextState).toBe(ConversationState.AWAITING_PAYMENT);
+    expect(r.nextState).toBe(ConversationState.AWAITING_PAYMENT_SCREENSHOT);
     expect(r.context.pincode).toBe('400001');
     expect(r.context.city).toBe('Mumbai');
     expect(r.context.state).toContain('Maharashtra');
