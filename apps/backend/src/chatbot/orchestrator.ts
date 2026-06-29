@@ -185,6 +185,9 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
     return;
   }
 
+  const statePriorityHandled = await handleStatePriorityInput(input, conv, event);
+  if (statePriorityHandled) return;
+
   // LATEST PHOTO WINS: a new product photo always starts a fresh matching flow
   // and hard-resets any incomplete order in progress — EXCEPT while we are
   // waiting for a payment screenshot, where an image is the payment proof, not
@@ -201,9 +204,6 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
 
   const catalogOptionsHandled = await handleCatalogOptionsIntent(input, conv, event);
   if (catalogOptionsHandled) return;
-
-  const statePriorityHandled = await handleStatePriorityInput(input, conv, event);
-  if (statePriorityHandled) return;
 
   // 4. Handle FAQs/cross-questions before asking the state machine to consume
   // the message as the next order answer.
@@ -343,6 +343,42 @@ async function handleStatePriorityInput(
   event: ChatEvent,
 ): Promise<boolean> {
   const ctx = readOrderContext(conv.contextJson);
+  const previousState = conv.state;
+
+  if (conv.state === ConversationState.AWAITING_SIZE) {
+    if (event.type === 'IMAGE') return false;
+    botLog('STATE_PRIORITY_ROUTE', {
+      conversationId: conv.id,
+      state: conv.state,
+      eventType: event.type,
+      route: 'size_selection',
+    });
+    if (shouldStateMachineHandleControlText(conv.state, event, ctx)) {
+      const routed = await runTransitionAndPersist(input, conv, statePriorityControlEvent(event));
+      logTurnCompleted(input, previousState, routed.result.nextState, event, 'state_control_command', routed.replyCount);
+      return true;
+    }
+    const handled = await handleSizeSelectionInput(input, conv, event);
+    if (handled) return true;
+    const routed = await runTransitionAndPersist(input, conv, event);
+    logTurnCompleted(input, previousState, routed.result.nextState, event, 'size_reprompt', routed.replyCount);
+    return true;
+  }
+
+  if (conv.state === ConversationState.AWAITING_PRODUCT_MATCH_CONFIRMATION) {
+    if (event.type === 'IMAGE') return false;
+    botLog('STATE_PRIORITY_ROUTE', {
+      conversationId: conv.id,
+      state: conv.state,
+      eventType: event.type,
+      route: 'product_match_confirmation',
+    });
+    const handled = await handleProductConfirmationInput(input, conv, event);
+    if (handled) return true;
+    const routed = await runTransitionAndPersist(input, conv, event);
+    logTurnCompleted(input, previousState, routed.result.nextState, event, 'product_confirmation_reprompt', routed.replyCount);
+    return true;
+  }
 
   if (conv.state === ConversationState.AWAITING_NEW_PRODUCT) {
     if (event.type === 'TEXT' && !shouldStateMachineHandleControlText(conv.state, event, ctx)) {
@@ -352,12 +388,38 @@ async function handleStatePriorityInput(
         return true;
       }
     }
-    await runTransitionAndPersist(input, conv, event);
+    botLog('STATE_PRIORITY_ROUTE', {
+      conversationId: conv.id,
+      state: conv.state,
+      eventType: event.type,
+      route: 'awaiting_new_product',
+    });
+    const routed = await runTransitionAndPersist(input, conv, statePriorityControlEvent(event));
+    logTurnCompleted(input, previousState, routed.result.nextState, event, 'awaiting_new_product', routed.replyCount);
     return true;
   }
 
   if (shouldStateMachineHandleControlText(conv.state, event, ctx)) {
-    await runTransitionAndPersist(input, conv, event);
+    botLog('STATE_PRIORITY_ROUTE', {
+      conversationId: conv.id,
+      state: conv.state,
+      eventType: event.type,
+      route: 'control_command',
+    });
+    const routed = await runTransitionAndPersist(input, conv, statePriorityControlEvent(event));
+    logTurnCompleted(input, previousState, routed.result.nextState, event, 'state_control_command', routed.replyCount);
+    return true;
+  }
+
+  if (isExpectedStateReply(conv.state, event)) {
+    botLog('STATE_PRIORITY_ROUTE', {
+      conversationId: conv.id,
+      state: conv.state,
+      eventType: event.type,
+      route: 'expected_state_reply',
+    });
+    const routed = await runTransitionAndPersist(input, conv, event);
+    logTurnCompleted(input, previousState, routed.result.nextState, event, stateConsumedBy(previousState), routed.replyCount);
     return true;
   }
 
@@ -374,7 +436,50 @@ function shouldStateMachineHandleControlText(
   if (isProductChangeFlowState(state) && isProductChangeIntent(event.body)) return true;
   if (isAmbiguousCancelFlowState(state) && isAmbiguousCancelIntent(event.body)) return true;
   if (isDirectCancelIntent(event.body) && state !== ConversationState.IDLE) return true;
+  if (/^(menu|help|options|agent|human|didi|owner)$/i.test(event.body.trim()) && state !== ConversationState.IDLE) return true;
   return false;
+}
+
+function statePriorityControlEvent(event: ChatEvent): ChatEvent {
+  if (event.type !== 'TEXT') return event;
+  const text = event.body.trim();
+  if (/^(cancel|reset|stop|rd|cnl)$/i.test(text)) return { type: 'META_CANCEL' };
+  if (/^(menu|help|options)$/i.test(text)) return { type: 'META_MENU' };
+  if (/^(agent|human|didi|owner)$/i.test(text)) return { type: 'META_AGENT' };
+  return event;
+}
+
+function isExpectedStateReply(state: ConversationState, event: ChatEvent): boolean {
+  switch (state) {
+    case ConversationState.AWAITING_NAME:
+    case ConversationState.AWAITING_ADDRESS:
+    case ConversationState.AWAITING_PINCODE:
+      return event.type === 'TEXT';
+    case ConversationState.AWAITING_PAYMENT:
+    case ConversationState.AWAITING_PAYMENT_SCREENSHOT:
+      return event.type === 'IMAGE';
+    case ConversationState.AWAITING_VERIFICATION:
+      return event.type === 'TEXT' || event.type === 'IMAGE';
+    default:
+      return false;
+  }
+}
+
+function stateConsumedBy(state: ConversationState): string {
+  switch (state) {
+    case ConversationState.AWAITING_NAME:
+      return 'name_entry';
+    case ConversationState.AWAITING_ADDRESS:
+    case ConversationState.AWAITING_PINCODE:
+      return 'address_entry';
+    case ConversationState.AWAITING_PAYMENT:
+    case ConversationState.AWAITING_PAYMENT_SCREENSHOT:
+      return 'payment_screenshot';
+    case ConversationState.AWAITING_VERIFICATION:
+      return 'verification_wait';
+    default:
+      return 'state_priority';
+  }
 }
 
 function isProductChangeFlowState(state: ConversationState): boolean {
@@ -428,13 +533,52 @@ async function runTransitionAndPersist(
   input: OrchestratorInput,
   conv: Conversation,
   event: ChatEvent,
-): Promise<void> {
+): Promise<{ result: ReturnType<typeof transition>; replyCount: number }> {
   let result = transition(conv.state, event, readOrderContext(conv.contextJson));
+  const replyCount = countPlannedReplies(result.actions);
   result = await executeActions(input, conv, result);
   await prisma.conversation.update({
     where: { id: conv.id },
     data: { state: result.nextState, contextJson: result.context as never },
   });
+  return { result, replyCount };
+}
+
+function countPlannedReplies(actions: Action[]): number {
+  return actions.filter((action) => (
+    action.type === 'SEND_TEXT' ||
+    action.type === 'SEND_BUTTONS' ||
+    action.type === 'SEND_LIST'
+  )).length;
+}
+
+function logTurnCompleted(
+  input: OrchestratorInput,
+  previousState: ConversationState,
+  nextState: ConversationState,
+  event: ChatEvent,
+  consumedBy: string,
+  replyCount: number,
+  silentReason: string | null = null,
+): void {
+  botLog('ORCHESTRATOR_TURN_COMPLETED', {
+    conversationId: input.conversationId,
+    previousState,
+    nextState,
+    eventType: event.type,
+    consumedBy,
+    replyCount,
+    silentReason,
+  });
+}
+
+async function sendLoggedText(to: string, body: string): Promise<void> {
+  botLog('AI_REPLY_GENERATED', {
+    source: 'template',
+    channel: 'text',
+    preview: body.slice(0, 200),
+  });
+  await sendText(to, body);
 }
 
 async function handleCatalogOptionsIntent(
@@ -444,6 +588,7 @@ async function handleCatalogOptionsIntent(
 ): Promise<boolean> {
   if (event.type !== 'TEXT') return false;
   const ctx = readOrderContext(conv.contextJson);
+  if (shouldSkipGenericCatalogIntent(conv.state, event.body)) return false;
   const detailed = await classifyCustomerIntent(buildCustomerIntentInput(event.body, conv.state, ctx));
 
   if (detailed.intent === 'REJECT_PRODUCT' && conv.state === ConversationState.AWAITING_PRODUCT_CONFIRMATION) {
@@ -495,6 +640,23 @@ async function handleCatalogOptionsIntent(
   }
 
   return false;
+}
+
+function shouldSkipGenericCatalogIntent(state: ConversationState, text: string): boolean {
+  const deterministicStates = ([
+    ConversationState.AWAITING_SIZE,
+    ConversationState.AWAITING_NAME,
+    ConversationState.AWAITING_ADDRESS,
+    ConversationState.AWAITING_PINCODE,
+    ConversationState.AWAITING_PAYMENT,
+    ConversationState.AWAITING_PAYMENT_SCREENSHOT,
+    ConversationState.AWAITING_VERIFICATION,
+  ] as ConversationState[]);
+  if (!deterministicStates.includes(state)) return false;
+  if (/^(cancel|cancel order|change product|new product|agent|human|menu|help|options)$/i.test(text.trim())) {
+    return false;
+  }
+  return true;
 }
 
 function buildCustomerIntentInput(
@@ -1790,8 +1952,9 @@ async function handleSizeSelectionInput(
   event: ChatEvent,
 ): Promise<boolean> {
   if (conv.state !== ConversationState.AWAITING_SIZE) return false;
+  const previousState = conv.state;
   const ctx = readOrderContext(conv.contextJson);
-  if (!ctx.productId) return false;
+  const activeProductId = ctx.productId ?? ctx.selectedProductId;
 
   let size: string | null = null;
   if ((event.type === 'BUTTON_REPLY' || event.type === 'LIST_REPLY') && event.id.startsWith('size_')) {
@@ -1802,13 +1965,39 @@ async function handleSizeSelectionInput(
   }
   if (!size) return false; // not a size reply — let the reducer re-prompt
 
-  const availability = await getProductAvailability(ctx.productId);
+  if (!activeProductId) {
+    botLog('SIZE_SELECTION_CONTEXT_MISSING', {
+      conversationId: conv.id,
+      state: conv.state,
+      hasProductId: Boolean(ctx.productId),
+      hasSelectedProductId: Boolean(ctx.selectedProductId),
+      availableSizes: ctx.availableSizes ?? [],
+      activeFlowId: ctx.activeFlowId ?? null,
+    });
+    await prisma.conversation.update({
+      where: { id: conv.id },
+      data: {
+        state: ConversationState.AWAITING_NEW_PRODUCT,
+        contextJson: {
+          ...ctx,
+          awaitingNewProduct: true,
+          lastImageUsable: false,
+        } as never,
+      },
+    });
+    await sendLoggedText(input.customerWhatsappNumber, PRODUCT_FIRST_MESSAGE);
+    logTurnCompleted(input, previousState, ConversationState.AWAITING_NEW_PRODUCT, event, 'size_context_missing', 1);
+    return true;
+  }
+
+  const availability = await getProductAvailability(activeProductId);
   if (!availability || !availability.isActive) {
     await prisma.conversation.update({
       where: { id: conv.id },
       data: { state: ConversationState.IDLE, contextJson: {} },
     });
-    await sendText(input.customerWhatsappNumber, 'This product is currently unavailable.');
+    await sendLoggedText(input.customerWhatsappNumber, 'This product is currently unavailable.');
+    logTurnCompleted(input, previousState, ConversationState.IDLE, event, 'size_selection', 1);
     return true;
   }
 
@@ -1819,26 +2008,39 @@ async function handleSizeSelectionInput(
   if (!chosen) {
     botLog('SIZE_SELECTION', {
       conversationId: conv.id,
-      productId: ctx.productId,
+      productId: activeProductId,
       requestedSize: size,
       decision: 'size_unavailable',
       availableSizes,
     });
     await prisma.conversation.update({
       where: { id: conv.id },
-      data: { state: ConversationState.AWAITING_SIZE, contextJson: { ...ctx, availableSizes } as never },
+      data: {
+        state: ConversationState.AWAITING_SIZE,
+        contextJson: {
+          ...ctx,
+          productId: activeProductId,
+          selectedProductId: activeProductId,
+          productName: ctx.productName ?? availability.name,
+          productPrice: Number(availability.basePrice),
+          unitPrice: Number(availability.basePrice),
+          availableSizes,
+        } as never,
+      },
     });
     if (availableSizes.length === 0) {
-      await sendText(input.customerWhatsappNumber, 'This product is currently unavailable.');
+      await sendLoggedText(input.customerWhatsappNumber, 'This product is currently unavailable.');
+      logTurnCompleted(input, previousState, ConversationState.AWAITING_SIZE, event, 'size_selection', 1);
       return true;
     }
-    await sendText(input.customerWhatsappNumber, unavailableSizeMessage(availableSizes));
+    await sendLoggedText(input.customerWhatsappNumber, unavailableSizeMessage(availableSizes));
+    logTurnCompleted(input, previousState, ConversationState.AWAITING_SIZE, event, 'size_selection', 1);
     return true;
   }
 
   botLog('SIZE_SELECTION', {
     conversationId: conv.id,
-    productId: ctx.productId,
+    productId: activeProductId,
     requestedSize: chosen.size,
     decision: 'in_stock',
   });
@@ -1847,10 +2049,23 @@ async function handleSizeSelectionInput(
     where: { id: conv.id },
     data: {
       state: ConversationState.AWAITING_NAME,
-      contextJson: { ...ctx, size: chosen.size, selectedSize: chosen.size, qty: 1 } as never,
+      contextJson: {
+        ...ctx,
+        productId: activeProductId,
+        selectedProductId: activeProductId,
+        productName: ctx.productName ?? availability.name,
+        productPrice: Number(availability.basePrice),
+        unitPrice: Number(availability.basePrice),
+        availableSizes,
+        variantId: chosen.id,
+        size: chosen.size,
+        selectedSize: chosen.size,
+        qty: 1,
+      } as never,
     },
   });
-  await sendText(input.customerWhatsappNumber, NAME_QUESTION_MESSAGE);
+  await sendLoggedText(input.customerWhatsappNumber, NAME_QUESTION_MESSAGE);
+  logTurnCompleted(input, previousState, ConversationState.AWAITING_NAME, event, 'size_selection', 1);
   return true;
 }
 
@@ -1896,6 +2111,7 @@ async function beginOrderFromProduct(
     selectedProductId: availability.id,
     productName: availability.name,
     productPrice: Number(availability.basePrice),
+    unitPrice: Number(availability.basePrice),
     qty: 1,
     availableSizes,
     ...(previousContext.activeFlowVersion !== undefined ? { activeFlowVersion: previousContext.activeFlowVersion } : {}),

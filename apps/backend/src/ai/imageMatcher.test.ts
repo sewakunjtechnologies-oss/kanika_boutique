@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import sharp from 'sharp';
 import { describe, expect, test } from 'vitest';
 import { env } from '../config/env';
@@ -252,5 +253,44 @@ describe('imageMatcher controlled inventory-photo matrix', () => {
     expect(scores[0]?.matchType).toBe('GENERAL_MATCH');
     expect(margin).toBeLessThan(env.IMAGE_MIN_SCORE_MARGIN);
     expect(classifyImageMatchDecision(top, margin, scores[0]?.matchType)).toBe('no_match');
+  });
+
+  const privateFixturePaths = {
+    blueScreenshot: '/Users/lovishgrover/Downloads/WhatsApp Image 2026-06-29 at 16.22.47.jpeg',
+    floralScreenshot: '/Users/lovishgrover/Downloads/WhatsApp Image 2026-06-29 at 16.20.42.jpeg',
+    blueInventory:
+      '/Users/lovishgrover/Downloads/Cloudinary_Archive_2026-06-29_16_09_6_Originals/kbp3lyv0f2bkz7fgx4u9.jpg',
+    floralInventory:
+      '/Users/lovishgrover/Downloads/Cloudinary_Archive_2026-06-29_16_09_6_Originals/o4rg8jc2epk4eyaixwrx.jpg',
+  };
+  const hasPrivateFixtures = Object.values(privateFixturePaths).every((fixturePath) => existsSync(fixturePath));
+
+  test.skipIf(!hasPrivateFixtures)('private Instagram/WhatsApp fixtures rank their matching inventory reference first', async () => {
+    const candidates = [
+      candidate(
+        'blue-geometric-private-reference',
+        readFileSync(privateFixturePaths.blueInventory),
+        'blue-geometric-private-reference',
+      ),
+      candidate(
+        'black-floral-private-reference',
+        readFileSync(privateFixturePaths.floralInventory),
+        'black-floral-private-reference',
+      ),
+    ];
+
+    const blueScores = await rankImageMatches(readFileSync(privateFixturePaths.blueScreenshot), candidates);
+    expect(blueScores[0]?.sku).toBe('blue-geometric-private-reference');
+    expect(blueScores[0]?.matchType).toBe('GARMENT_EMBEDDING_MATCH');
+    expect(blueScores[0]?.confidence).toBeGreaterThan(blueScores[1]?.confidence ?? 0);
+    expect(blueScores[1]?.sku).toBe('black-floral-private-reference');
+    expect(blueScores[1]?.matchType).toBe('GENERAL_MATCH');
+
+    const floralScores = await rankImageMatches(readFileSync(privateFixturePaths.floralScreenshot), candidates);
+    expect(floralScores[0]?.sku).toBe('black-floral-private-reference');
+    expect(floralScores[0]?.matchType).toBe('LOCAL_FEATURE_MATCH');
+    expect(floralScores[0]?.confidence).toBeGreaterThan(floralScores[1]?.confidence ?? 0);
+    expect(floralScores[1]?.sku).toBe('blue-geometric-private-reference');
+    expect(floralScores[1]?.matchType).toBe('GENERAL_MATCH');
   });
 });

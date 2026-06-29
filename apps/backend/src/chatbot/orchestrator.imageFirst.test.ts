@@ -115,8 +115,10 @@ import { prisma } from '@kda/db';
 import { sendText, sendImage, sendInteractiveButtons, sendInteractiveList, downloadMedia, downloadMediaToBuffer } from '../whatsapp/client';
 import { matchProduct } from '../ai/productMatcher';
 import { extractPayment } from '../ai/paymentExtractor';
+import * as intentClassifier from '../ai/intentClassifier';
 import { getProductAvailability, createOrderFromContext, checkStock } from './orderService';
 import { emitToDashboard } from '../realtime/io';
+import { logger } from '../logger';
 import { handleInboundMessage } from './orchestrator';
 
 const imageInput = {
@@ -155,6 +157,19 @@ const buttonInput = (id: string, title = id) => ({
     timestamp: '1710000200',
     type: 'interactive' as const,
     interactive: { type: 'button_reply' as const, button_reply: { id, title } },
+  },
+});
+
+const listInput = (id: string, title = id) => ({
+  conversationId: 'conv1',
+  customerId: 'cust1',
+  customerWhatsappNumber: '919999999999',
+  message: {
+    from: '919999999999',
+    id: 'wamid.LIST1',
+    timestamp: '1710000200',
+    type: 'interactive' as const,
+    interactive: { type: 'list_reply' as const, list_reply: { id, title } },
   },
 });
 
@@ -272,6 +287,32 @@ describe('direct image availability matching', () => {
     expect(allSentText()).not.toMatch(/pcs|stock|possible match|available products|confirm product/i);
     expect(createOrderFromContext).not.toHaveBeenCalled();
     expect(h.conv.state).toBe('AWAITING_SIZE');
+  });
+
+  test('matched photo → bot asks size → customer sends 42 → bot asks name', async () => {
+    vi.mocked(matchProduct).mockResolvedValue(outcome(0.5) as never);
+    vi.mocked(getProductAvailability).mockResolvedValue(availability([{ size: '42', stock: 2 }]) as never);
+    const classifierSpy = vi.spyOn(intentClassifier, 'classifyCustomerIntent');
+
+    await handleInboundMessage(imageInput as never);
+
+    expect(h.conv.state).toBe('AWAITING_SIZE');
+    expect(allSentText()).toContain('Available sizes: 42');
+    expect(allSentText()).toContain('Please send your size.');
+    vi.mocked(sendText).mockClear();
+    vi.mocked(sendImage).mockClear();
+    vi.mocked(sendInteractiveButtons).mockClear();
+    vi.mocked(sendInteractiveList).mockClear();
+
+    await handleInboundMessage(textInput('42') as never);
+
+    expect(classifierSpy).not.toHaveBeenCalled();
+    expect(getProductAvailability).toHaveBeenLastCalledWith('p1');
+    expect(h.conv.state).toBe('AWAITING_NAME');
+    expect(h.conv.contextJson).toMatchObject({ productId: 'p1', selectedProductId: 'p1', size: '42', selectedSize: '42', qty: 1 });
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledWith('919999999999', 'What name should we put on the order?');
+    expect(customerReplyCount()).toBe(1);
   });
 
   test('8b: unmatched image emits dashboard signal but sends nothing', async () => {
@@ -449,12 +490,67 @@ describe('YES product confirmation → availability by variant stock', () => {
     expect(allSentText().toLowerCase()).toContain('name');
   });
 
+  test('AWAITING_SIZE + "42" is routed to size selection before catalog intent', async () => {
+    h.conv.state = 'AWAITING_SIZE';
+    h.conv.contextJson = {
+      productId: 'p1',
+      selectedProductId: 'p1',
+      productName: 'Three-Piece Kurti',
+      availableSizes: ['42'],
+      activeFlowId: 'flow1',
+      activeFlowVersion: 7,
+      availableProductOptions: ['stale-option-1'],
+      availableProductListShown: true,
+      availableProductListSize: '42',
+    } as never;
+    vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '42', stock: 3 }]) as never);
+    const classifierSpy = vi.spyOn(intentClassifier, 'classifyCustomerIntent');
+
+    await handleInboundMessage(textInput('42') as never);
+
+    expect(classifierSpy).not.toHaveBeenCalled();
+    expect(getProductAvailability).toHaveBeenCalledWith('p1');
+    expect(h.conv.state).toBe('AWAITING_NAME');
+    expect(h.conv.contextJson).toMatchObject({ size: '42', selectedSize: '42', qty: 1 });
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledWith('919999999999', 'What name should we put on the order?');
+    expect(sendInteractiveButtons).not.toHaveBeenCalled();
+    expect(sendInteractiveList).not.toHaveBeenCalled();
+    expect(allSentText()).not.toMatch(/how many|quantity|pcs|stock|product numbers/i);
+  });
+
+  test('AWAITING_SIZE + button size_42 asks for name', async () => {
+    h.conv.state = 'AWAITING_SIZE';
+    h.conv.contextJson = { productId: 'p1', selectedProductId: 'p1', productName: 'Three-Piece Kurti', availableSizes: ['42'], qty: 1 } as never;
+    vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '42', stock: 3 }]) as never);
+
+    await handleInboundMessage(buttonInput('size_42', '42') as never);
+
+    expect(getProductAvailability).toHaveBeenCalledWith('p1');
+    expect(h.conv.state).toBe('AWAITING_NAME');
+    expect(h.conv.contextJson).toMatchObject({ productId: 'p1', selectedProductId: 'p1', size: '42', selectedSize: '42', qty: 1 });
+    expect(sendText).toHaveBeenCalledWith('919999999999', 'What name should we put on the order?');
+  });
+
+  test('AWAITING_SIZE + list size_42 asks for name', async () => {
+    h.conv.state = 'AWAITING_SIZE';
+    h.conv.contextJson = { productId: 'p1', selectedProductId: 'p1', productName: 'Three-Piece Kurti', availableSizes: ['42'], qty: 1 } as never;
+    vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '42', stock: 3 }]) as never);
+
+    await handleInboundMessage(listInput('size_42', '42') as never);
+
+    expect(getProductAvailability).toHaveBeenCalledWith('p1');
+    expect(h.conv.state).toBe('AWAITING_NAME');
+    expect(h.conv.contextJson).toMatchObject({ productId: 'p1', selectedProductId: 'p1', size: '42', selectedSize: '42', qty: 1 });
+    expect(sendText).toHaveBeenCalledWith('919999999999', 'What name should we put on the order?');
+  });
+
   test('invalid size keeps product selected and sends exact unavailable-size message only', async () => {
     h.conv.state = 'AWAITING_SIZE';
     h.conv.contextJson = { productId: 'p1', productName: 'Three-Piece Kurti', availableSizes: ['38', '40', '42'], qty: 1 } as never;
     vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '38', stock: 1 }, { size: '40', stock: 2 }, { size: '42', stock: 1 }]) as never);
 
-    await handleInboundMessage(textInput('46') as never);
+    await handleInboundMessage(textInput('44') as never);
 
     expect(h.conv.state).toBe('AWAITING_SIZE');
     expect((h.conv.contextJson as Record<string, unknown>).productId).toBe('p1');
@@ -466,9 +562,114 @@ describe('YES product confirmation → availability by variant stock', () => {
     expect(sendInteractiveList).not.toHaveBeenCalled();
     expect(allSentText()).not.toMatch(/how many|quantity|pcs|stock/i);
   });
+
+  test('AWAITING_SIZE + cancel cancels the flow', async () => {
+    h.conv.state = 'AWAITING_SIZE';
+    h.conv.contextJson = { productId: 'p1', selectedProductId: 'p1', availableSizes: ['42'], qty: 1 } as never;
+
+    await handleInboundMessage(textInput('cancel') as never);
+
+    expect(getProductAvailability).not.toHaveBeenCalled();
+    expect(h.conv.state).toBe('IDLE');
+    expect(allSentText().toLowerCase()).toContain('cancelled');
+  });
+
+  test('AWAITING_SIZE + change product requests a new product photo', async () => {
+    h.conv.state = 'AWAITING_SIZE';
+    h.conv.contextJson = { productId: 'p1', selectedProductId: 'p1', availableSizes: ['42'], qty: 1 } as never;
+
+    await handleInboundMessage(textInput('change product') as never);
+
+    expect(getProductAvailability).not.toHaveBeenCalled();
+    expect(h.conv.state).toBe('AWAITING_NEW_PRODUCT');
+    expect(allSentText()).toContain('Please send the new product photo or article number');
+  });
+
+  test('AWAITING_SIZE + selectedProductId only uses compatibility fallback', async () => {
+    h.conv.state = 'AWAITING_SIZE';
+    h.conv.contextJson = { selectedProductId: 'p1', productName: 'Three-Piece Kurti', availableSizes: ['42'], qty: 1 } as never;
+    vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '42', stock: 3 }]) as never);
+
+    await handleInboundMessage(textInput('42') as never);
+
+    expect(getProductAvailability).toHaveBeenCalledWith('p1');
+    expect(h.conv.state).toBe('AWAITING_NAME');
+    expect(h.conv.contextJson).toMatchObject({ productId: 'p1', selectedProductId: 'p1', size: '42', selectedSize: '42', qty: 1 });
+  });
+
+  test('AWAITING_SIZE + missing product IDs logs and recovers instead of silently dropping', async () => {
+    const loggerInfoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never);
+    h.conv.state = 'AWAITING_SIZE';
+    h.conv.contextJson = { availableSizes: ['42'], activeFlowId: 'flow1' } as never;
+
+    try {
+      await handleInboundMessage(textInput('42') as never);
+
+      expect(getProductAvailability).not.toHaveBeenCalled();
+      expect(h.conv.state).toBe('AWAITING_NEW_PRODUCT');
+      expect(sendText).toHaveBeenCalledWith(
+        '919999999999',
+        "Please send the product photo or article number first, then I'll check availability.",
+      );
+      expect(loggerInfoSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'SIZE_SELECTION_CONTEXT_MISSING',
+          conversationId: 'conv1',
+          state: 'AWAITING_SIZE',
+          hasProductId: false,
+          hasSelectedProductId: false,
+          activeFlowId: 'flow1',
+        }),
+        'SIZE_SELECTION_CONTEXT_MISSING',
+      );
+    } finally {
+      loggerInfoSpy.mockRestore();
+    }
+  });
+
+  test('duplicate "42" after moving to AWAITING_NAME does not re-run size selection', async () => {
+    h.conv.state = 'AWAITING_SIZE';
+    h.conv.contextJson = { productId: 'p1', selectedProductId: 'p1', productName: 'Three-Piece Kurti', availableSizes: ['42'], qty: 1 } as never;
+    vi.mocked(getProductAvailability).mockResolvedValue(prod([{ size: '42', stock: 3 }]) as never);
+
+    await handleInboundMessage(textInput('42') as never);
+    vi.mocked(sendText).mockClear();
+    await handleInboundMessage(textInput('42') as never);
+
+    expect(getProductAvailability).toHaveBeenCalledTimes(1);
+    expect(h.conv.state).toBe('AWAITING_ADDRESS');
+    expect(h.conv.contextJson).toMatchObject({ size: '42', selectedSize: '42', customerName: '42' });
+    expect(sendText).toHaveBeenCalledWith(
+      '919999999999',
+      'Please send your complete delivery address with house/flat, street/area, city, state and 6-digit pincode in one message.',
+    );
+  });
 });
 
 describe('order creation + QR payment', () => {
+  test('AWAITING_NAME + text asks for full address', async () => {
+    h.conv.state = 'AWAITING_NAME';
+    h.conv.contextJson = {
+      productId: 'p1',
+      selectedProductId: 'p1',
+      productName: 'Blue Suit',
+      size: '42',
+      selectedSize: '42',
+      qty: 1,
+      productPrice: 1760,
+      unitPrice: 1760,
+    } as never;
+
+    await handleInboundMessage(textInput('Madhav') as never);
+
+    expect(h.conv.state).toBe('AWAITING_ADDRESS');
+    expect(h.conv.contextJson).toMatchObject({ customerName: 'Madhav', size: '42', selectedSize: '42' });
+    expect(sendText).toHaveBeenCalledWith(
+      '919999999999',
+      'Please send your complete delivery address with house/flat, street/area, city, state and 6-digit pincode in one message.',
+    );
+  });
+
   test('15 + 19 + 20 + 21: address reply → order qty 1, QR image with amount, no UPI ID', async () => {
     env.PAYMENT_QR_IMAGE_URL = 'https://cdn.test/qr.png';
     h.conv.state = 'AWAITING_ADDRESS';

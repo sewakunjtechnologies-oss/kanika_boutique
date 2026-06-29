@@ -26,7 +26,12 @@ async function main(): Promise<void> {
   );
 
   const candidates = await buildCatalogImageCandidates(catalog);
-  const candidatesByProduct = new Map(candidates.map((candidate) => [candidate.productId, candidate]));
+  const candidatesByProduct = new Map<string, typeof candidates>();
+  for (const candidate of candidates) {
+    const entries = candidatesByProduct.get(candidate.productId) ?? [];
+    entries.push(candidate);
+    candidatesByProduct.set(candidate.productId, entries);
+  }
   const currentSourceImageIds = new Set(candidates.map((candidate) => candidate.imageId));
 
   let generatedFeatures = 0;
@@ -36,80 +41,90 @@ async function main(): Promise<void> {
   const hashToSources = new Map<string, Array<{ productId: string; sku: string; sourceImageId: string }>>();
 
   for (const product of catalog) {
-    const candidate = candidatesByProduct.get(product.id);
-    if (!candidate) {
+    const productCandidates = candidatesByProduct.get(product.id) ?? [];
+    if (productCandidates.length === 0) {
       skippedImages += 1;
       failedImageDownloads += 1;
       failed.push({ productId: product.id, sku: product.sku, reason: 'image_unreachable_or_missing' });
       continue;
     }
 
-    const diag = await inspectImageBuffer(candidate.imageBuffer);
-    if (!diag.isUsable) {
-      skippedImages += 1;
-      failed.push({
-        productId: product.id,
-        sku: product.sku,
-        sourceImageId: candidate.imageId,
-        reason: diag.reason ?? 'unusable',
-      });
-      continue;
-    }
+    for (const candidate of productCandidates) {
+      const diag = await inspectImageBuffer(candidate.imageBuffer);
+      if (!diag.isUsable) {
+        skippedImages += 1;
+        failed.push({
+          productId: product.id,
+          sku: product.sku,
+          sourceImageId: candidate.imageId,
+          reason: diag.reason ?? 'unusable',
+        });
+        continue;
+      }
 
-    try {
-      const fingerprint = await fingerprintImage(candidate.imageBuffer);
-      const serial = serializeImageFingerprint(fingerprint);
-      const now = new Date();
-      await prisma.productImageFeature.upsert({
-        where: {
-          sourceImageId_algorithmVersion_schemaVersion: {
+      try {
+        const fingerprint = await fingerprintImage(candidate.imageBuffer);
+        const serial = serializeImageFingerprint(fingerprint);
+        const now = new Date();
+        await prisma.productImageFeature.upsert({
+          where: {
+            sourceImageId_algorithmVersion_schemaVersion: {
+              sourceImageId: candidate.imageId,
+              algorithmVersion: serial.algorithmVersion,
+              schemaVersion: serial.schemaVersion,
+            },
+          },
+          create: {
             sourceImageId: candidate.imageId,
+            productId: product.id,
+            imageUrl: product.imageUrl ?? '',
+            imageHash: serial.rawSha256,
+            decodedImageHash: serial.decodedSha256,
             algorithmVersion: serial.algorithmVersion,
             schemaVersion: serial.schemaVersion,
+            width: serial.width,
+            height: serial.height,
+            format: serial.format,
+            averageHash: serial.averageHash,
+            differenceHash: serial.differenceHash,
+            perceptualHash: serial.perceptualHash,
+            cropBoxes: fingerprint.cropBoxes,
+            featureSummary: buildFeatureSummary(fingerprint),
+            accessibilityStatus: 'valid',
+            failureReason: null,
+            generatedAt: now,
           },
-        },
-        create: {
+          update: {
+            productId: product.id,
+            imageUrl: product.imageUrl ?? '',
+            imageHash: serial.rawSha256,
+            decodedImageHash: serial.decodedSha256,
+            width: serial.width,
+            height: serial.height,
+            format: serial.format,
+            averageHash: serial.averageHash,
+            differenceHash: serial.differenceHash,
+            perceptualHash: serial.perceptualHash,
+            cropBoxes: fingerprint.cropBoxes,
+            featureSummary: buildFeatureSummary(fingerprint),
+            accessibilityStatus: 'valid',
+            failureReason: null,
+            generatedAt: now,
+          },
+        });
+        generatedFeatures += 1;
+        const entries = hashToSources.get(serial.rawSha256) ?? [];
+        entries.push({ productId: product.id, sku: product.sku, sourceImageId: candidate.imageId });
+        hashToSources.set(serial.rawSha256, entries);
+      } catch (err) {
+        skippedImages += 1;
+        failed.push({
+          productId: product.id,
+          sku: product.sku,
           sourceImageId: candidate.imageId,
-          productId: product.id,
-          imageUrl: product.imageUrl ?? '',
-          imageHash: serial.rawSha256,
-          decodedImageHash: serial.decodedSha256,
-          algorithmVersion: serial.algorithmVersion,
-          schemaVersion: serial.schemaVersion,
-          width: serial.width,
-          height: serial.height,
-          format: serial.format,
-          averageHash: serial.averageHash,
-          differenceHash: serial.differenceHash,
-          perceptualHash: serial.perceptualHash,
-          generatedAt: now,
-        },
-        update: {
-          productId: product.id,
-          imageUrl: product.imageUrl ?? '',
-          imageHash: serial.rawSha256,
-          decodedImageHash: serial.decodedSha256,
-          width: serial.width,
-          height: serial.height,
-          format: serial.format,
-          averageHash: serial.averageHash,
-          differenceHash: serial.differenceHash,
-          perceptualHash: serial.perceptualHash,
-          generatedAt: now,
-        },
-      });
-      generatedFeatures += 1;
-      const entries = hashToSources.get(serial.rawSha256) ?? [];
-      entries.push({ productId: product.id, sku: product.sku, sourceImageId: candidate.imageId });
-      hashToSources.set(serial.rawSha256, entries);
-    } catch (err) {
-      skippedImages += 1;
-      failed.push({
-        productId: product.id,
-        sku: product.sku,
-        sourceImageId: candidate.imageId,
-        reason: err instanceof Error ? err.message : 'fingerprint_failed',
-      });
+          reason: err instanceof Error ? err.message : 'fingerprint_failed',
+        });
+      }
     }
   }
 
@@ -135,6 +150,7 @@ async function main(): Promise<void> {
       skippedImages,
       failedImageDownloads,
       duplicateImages: duplicateImages.length,
+      productsWithNoUsableReferences: catalog.length - new Set(candidates.map((candidate) => candidate.productId)).size,
     },
     'backfill: image feature generation complete',
   );
@@ -144,6 +160,35 @@ async function main(): Promise<void> {
   if (failed.length > 0) {
     logger.warn({ failed }, 'backfill: products that cannot match until images are fixed');
   }
+}
+
+function buildFeatureSummary(fingerprint: Awaited<ReturnType<typeof fingerprintImage>>): Record<string, unknown> {
+  return {
+    algorithmVersion: fingerprint.algorithmVersion,
+    schemaVersion: fingerprint.schemaVersion,
+    image: {
+      width: fingerprint.width,
+      height: fingerprint.height,
+      format: fingerprint.format,
+    },
+    views: Object.fromEntries(
+      Object.entries(fingerprint.views).map(([kind, view]) => [
+        kind,
+        {
+          box: view.box,
+          colorSignature: roundVector(view.colorSignature),
+          patternHistogram: roundVector(view.patternHistogram),
+          linePatternSignature: roundVector(view.linePatternSignature),
+          embedding: roundVector(view.embedding),
+          localDescriptorCount: view.localDescriptors.length,
+        },
+      ]),
+    ),
+  };
+}
+
+function roundVector(values: number[]): number[] {
+  return values.map((value) => Math.round(value * 10_000) / 10_000);
 }
 
 main()

@@ -5,6 +5,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { matchProduct } from '../src/ai/productMatcher';
+import { writeImageMatchDebugViews } from '../src/ai/imageMatcher';
 import type { SupportedImageMimeType } from '../src/ai/schemas';
 
 async function main(): Promise<void> {
@@ -14,6 +15,13 @@ async function main(): Promise<void> {
   }
 
   const buffer = await fs.readFile(imagePath);
+  const debugDir = path.resolve(
+    process.cwd(),
+    '.tmp',
+    'image-match-debug',
+    `${Date.now()}-${path.basename(imagePath, path.extname(imagePath)).replace(/[^a-z0-9._-]+/gi, '_')}`,
+  );
+  const debugViews = await writeImageMatchDebugViews(buffer, debugDir, 'query');
   const outcome = await matchProduct({
     imageBase64: buffer.toString('base64'),
     imageMediaType: guessMime(imagePath),
@@ -29,6 +37,9 @@ async function main(): Promise<void> {
     topScore: outcome.confidence,
     secondScore,
     scoreMargin: outcome.bestSecondMargin,
+    cleanedImagePreviewPath: debugViews.screenshotClean,
+    debugViewPaths: debugViews,
+    detectedGarmentBoxes: outcome.candidates[0]?.cropBoxes ?? [],
     candidates: outcome.candidates.slice(0, 5).map((candidate, index) => ({
       rank: index + 1,
       productId: candidate.productId,
@@ -42,7 +53,16 @@ async function main(): Promise<void> {
       pixelScore: candidate.pixelSimilarity,
       edgeScore: candidate.edgeSimilarity,
       embeddingScore: candidate.embeddingSimilarity,
+      garmentEmbeddingScore: candidate.garmentEmbeddingSimilarity,
+      localFeatureScore: candidate.localFeatureScore,
+      localFeatureMatches: candidate.localFeatureMatches,
+      localFeatureInlierRatio: candidate.localFeatureInlierRatio,
+      patternScore: candidate.patternSimilarity,
+      linePatternScore: candidate.linePatternSimilarity,
       colourScore: candidate.colorSimilarity,
+      garmentColourScore: candidate.garmentColorSimilarity,
+      matchedViewPair: candidate.matchedViewPair,
+      cropBoxes: candidate.cropBoxes,
       scoreMargin: Math.max(candidate.confidence - (secondScore ?? 0), 0),
       decisionReason: outcome.decisionReason,
     })),

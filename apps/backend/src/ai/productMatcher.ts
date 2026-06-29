@@ -18,6 +18,7 @@ import {
   type ImageMatchType,
   type ImageMatchScore,
   type ImageCandidate,
+  type ImageViewBox,
 } from './imageMatcher';
 
 export const PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.5;
@@ -43,7 +44,17 @@ export interface ProductMatchCandidate {
   structuralSimilarity?: number;
   edgeSimilarity?: number;
   colorSimilarity?: number;
+  garmentColorSimilarity?: number;
   embeddingSimilarity?: number | null;
+  garmentEmbeddingSimilarity?: number;
+  localFeatureScore?: number;
+  localFeatureMatches?: number;
+  localFeatureInlierRatio?: number;
+  localFeatureCoverage?: number;
+  patternSimilarity?: number;
+  linePatternSimilarity?: number;
+  matchedViewPair?: string | null;
+  cropBoxes?: ImageViewBox[];
   nearDuplicateScore?: number;
   generalScore?: number;
 }
@@ -100,6 +111,8 @@ export function classifyImageMatchDecision(
 ): ProductMatchDecision {
   if (matchType === 'EXACT_MATCH') return 'auto_match';
   if (matchType === 'NEAR_DUPLICATE_MATCH' && topScore >= env.IMAGE_MATCH_THRESHOLD) return 'auto_match';
+  if (matchType === 'LOCAL_FEATURE_MATCH' && topScore >= env.IMAGE_MATCH_THRESHOLD) return 'auto_match';
+  if (matchType === 'GARMENT_EMBEDDING_MATCH' && topScore >= env.IMAGE_MATCH_THRESHOLD) return 'auto_match';
   const clearMargin = margin === null || margin === undefined || margin >= env.IMAGE_MIN_SCORE_MARGIN;
   if (topScore >= env.IMAGE_MATCH_THRESHOLD && clearMargin) return 'auto_match';
   return 'no_match';
@@ -195,7 +208,11 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
     const candidates = ranked.slice(0, 5).map(scoreToCandidate);
     const confidenceBand = classifyProductMatchConfidence(best?.confidence ?? 0);
     const bestSecondMargin = best && second ? Math.max(best.confidence - second.confidence, 0) : best ? 1 : null;
-    const bypassGenericMargin = best?.matchType === 'EXACT_MATCH' || best?.matchType === 'NEAR_DUPLICATE_MATCH';
+    const bypassGenericMargin =
+      best?.matchType === 'EXACT_MATCH' ||
+      best?.matchType === 'NEAR_DUPLICATE_MATCH' ||
+      best?.matchType === 'LOCAL_FEATURE_MATCH' ||
+      best?.matchType === 'GARMENT_EMBEDDING_MATCH';
     const hasClearBestMatch =
       bypassGenericMargin || hasClearBestImageCandidate(best?.confidence, second?.confidence);
     const decision = classifyImageMatchDecision(best?.confidence ?? 0, bestSecondMargin, best?.matchType);
@@ -373,13 +390,30 @@ function scoreToCandidate(score: ImageMatchScore): ProductMatchCandidate {
     structuralSimilarity: score.structuralSimilarity,
     edgeSimilarity: score.edgeSimilarity,
     colorSimilarity: score.colorSimilarity,
+    garmentColorSimilarity: score.garmentColorSimilarity,
     embeddingSimilarity: score.embeddingSimilarity,
+    garmentEmbeddingSimilarity: score.garmentEmbeddingSimilarity,
+    localFeatureScore: score.localFeatureScore,
+    localFeatureMatches: score.localFeatureMatches,
+    localFeatureInlierRatio: score.localFeatureInlierRatio,
+    localFeatureCoverage: score.localFeatureCoverage,
+    patternSimilarity: score.patternSimilarity,
+    linePatternSimilarity: score.linePatternSimilarity,
+    matchedViewPair: score.matchedViewPair,
+    cropBoxes: score.cropBoxes,
     nearDuplicateScore: score.nearDuplicateScore,
     generalScore: score.generalScore,
   };
 }
 
-type StructuredImageDecision = 'EXACT_MATCH' | 'NEAR_DUPLICATE_MATCH' | 'GENERAL_MATCH' | 'AMBIGUOUS' | 'NO_MATCH';
+type StructuredImageDecision =
+  | 'EXACT_MATCH'
+  | 'NEAR_DUPLICATE_MATCH'
+  | 'LOCAL_FEATURE_MATCH'
+  | 'GARMENT_EMBEDDING_MATCH'
+  | 'GENERAL_MATCH'
+  | 'AMBIGUOUS'
+  | 'NO_MATCH';
 
 function classifyStructuredImageDecision(
   best: ImageMatchScore | undefined,
@@ -404,6 +438,8 @@ function logImageMatchStages(
   const second = ranked[1];
   const exactCount = ranked.filter((score) => score.matchType === 'EXACT_MATCH').length;
   const nearDuplicateCount = ranked.filter((score) => score.matchType === 'NEAR_DUPLICATE_MATCH').length;
+  const localFeatureCount = ranked.filter((score) => score.matchType === 'LOCAL_FEATURE_MATCH').length;
+  const garmentEmbeddingCount = ranked.filter((score) => score.matchType === 'GARMENT_EMBEDDING_MATCH').length;
   const generalCount = ranked.filter((score) => score.matchType === 'GENERAL_MATCH').length;
 
   botLog('IMAGE_MATCH_EXACT_HASH_CHECK', {
@@ -422,6 +458,30 @@ function logImageMatchStages(
     featureThreshold: env.IMAGE_NEAR_DUPLICATE_FEATURE_THRESHOLD,
     topSku: best?.matchType === 'NEAR_DUPLICATE_MATCH' ? best.sku : null,
     topScore: best?.matchType === 'NEAR_DUPLICATE_MATCH' ? best.confidence : null,
+  });
+  botLog('IMAGE_MATCH_LOCAL_FEATURE_CHECK', {
+    candidateCount,
+    localFeatureCount,
+    threshold: env.IMAGE_LOCAL_FEATURE_THRESHOLD,
+    minMatches: env.IMAGE_LOCAL_FEATURE_MIN_MATCHES,
+    minInlierRatio: env.IMAGE_LOCAL_FEATURE_MIN_INLIER_RATIO,
+    minEdgeSimilarity: env.IMAGE_LOCAL_FEATURE_MIN_EDGE_SIMILARITY,
+    minLinePatternSimilarity: env.IMAGE_LOCAL_FEATURE_MIN_LINE_PATTERN_SIMILARITY,
+    topSku: best?.matchType === 'LOCAL_FEATURE_MATCH' ? best.sku : null,
+    topScore: best?.matchType === 'LOCAL_FEATURE_MATCH' ? best.confidence : null,
+    topLocalFeatureScore: best?.localFeatureScore ?? null,
+    topLocalFeatureMatches: best?.localFeatureMatches ?? null,
+    topMatchedViewPair: best?.matchedViewPair ?? null,
+  });
+  botLog('IMAGE_MATCH_GARMENT_EMBEDDING_CHECK', {
+    candidateCount,
+    garmentEmbeddingCount,
+    threshold: env.IMAGE_GARMENT_EMBEDDING_THRESHOLD,
+    minEdgeSimilarity: env.IMAGE_GARMENT_EMBEDDING_MIN_EDGE_SIMILARITY,
+    minLinePatternSimilarity: env.IMAGE_GARMENT_EMBEDDING_MIN_LINE_PATTERN_SIMILARITY,
+    topSku: best?.matchType === 'GARMENT_EMBEDDING_MATCH' ? best.sku : null,
+    topScore: best?.matchType === 'GARMENT_EMBEDDING_MATCH' ? best.confidence : null,
+    topEmbeddingScore: best?.garmentEmbeddingSimilarity ?? null,
   });
   botLog('IMAGE_MATCH_GENERAL_CHECK', {
     candidateCount,
@@ -467,7 +527,16 @@ function scoreToLog(score: ImageMatchScore, index: number): Record<string, unkno
     colourPixelScore: score.colorPixelSimilarity,
     edgeScore: score.edgeSimilarity,
     embeddingScore: score.embeddingSimilarity,
+    garmentEmbeddingScore: score.garmentEmbeddingSimilarity,
+    localFeatureScore: score.localFeatureScore,
+    localFeatureMatches: score.localFeatureMatches,
+    localFeatureInlierRatio: score.localFeatureInlierRatio,
+    localFeatureCoverage: score.localFeatureCoverage,
+    patternScore: score.patternSimilarity,
+    linePatternScore: score.linePatternSimilarity,
+    matchedViewPair: score.matchedViewPair,
     colourScore: score.colorSimilarity,
+    garmentColourScore: score.garmentColorSimilarity,
     nearDuplicateScore: score.nearDuplicateScore,
     generalScore: score.generalScore,
     rawHashMatch: score.rawHashMatch,
@@ -475,9 +544,8 @@ function scoreToLog(score: ImageMatchScore, index: number): Record<string, unkno
   };
 }
 
-/** Identifier for the active image-matching technique (perceptual hashes +
- * optional Gemini embedding fallback). Bump when the technique changes. */
-export const IMAGE_MATCH_MODEL_VERSION = 'perceptual-v3-multistage';
+/** Identifier for the active image-matching technique. Bump when the technique changes. */
+export const IMAGE_MATCH_MODEL_VERSION = 'garment-local-v4';
 
 export async function fetchCatalog(): Promise<CatalogEntry[]> {
   const products = await prisma.product.findMany({

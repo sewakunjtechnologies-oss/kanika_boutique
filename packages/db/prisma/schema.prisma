@@ -156,7 +156,7 @@ model Product {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  categoryRecord Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  categoryRecord Category?             @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   variants       ProductVariant[]
   imageFeatures  ProductImageFeature[]
 
@@ -166,28 +166,33 @@ model Product {
 }
 
 model ProductImageFeature {
-  id               String   @id @default(cuid())
-  sourceImageId    String
-  productId        String
-  imageUrl         String
-  imageHash        String
-  decodedImageHash String
-  algorithmVersion String
-  schemaVersion    Int
-  width            Int
-  height           Int
-  format           String?
-  averageHash      String
-  differenceHash   String
-  perceptualHash   String
-  generatedAt      DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  sourceImageId       String
+  productId           String
+  imageUrl            String
+  imageHash           String
+  decodedImageHash    String
+  algorithmVersion    String
+  schemaVersion       Int
+  width               Int
+  height              Int
+  format              String?
+  averageHash         String
+  differenceHash      String
+  perceptualHash      String
+  cropBoxes           Json?
+  featureSummary      Json?
+  accessibilityStatus String   @default("valid")
+  failureReason       String?
+  generatedAt         DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@unique([sourceImageId, algorithmVersion, schemaVersion])
   @@index([productId])
   @@index([imageHash])
+  @@index([accessibilityStatus])
   @@index([algorithmVersion, schemaVersion])
 }
 
@@ -310,9 +315,9 @@ model Order {
   createdAt                DateTime            @default(now())
   updatedAt                DateTime            @updatedAt
 
-  customer       Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  approvedBy     AdminUser?      @relation("OrderApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
-  rejectedBy     AdminUser?      @relation("OrderRejectedBy", fields: [rejectedById], references: [id], onDelete: SetNull)
+  customer       Customer                @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  approvedBy     AdminUser?              @relation("OrderApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  rejectedBy     AdminUser?              @relation("OrderRejectedBy", fields: [rejectedById], references: [id], onDelete: SetNull)
   items          OrderItem[]
   stockMovements StockMovement[]
   printJobs      PrintJob[]
