@@ -230,6 +230,16 @@ CHATBOT_DEBUG=false
 LOG_LEVEL=info
 ```
 
+Optional garment segmentation (image matching):
+
+- `IMAGE_SEGMENTATION_ENABLED` background-removes the studio backdrop from images sent to the Gemini verifier so it judges the garment, not the shared wall/model/hanger. It is **off by default**.
+- The segmentation model (`@imgly/background-removal-node`, which pulls `onnxruntime-node` + an ~85MB model) is **intentionally NOT a declared dependency** — this keeps `npm ci` and deploys light and fast. To enable it, install the package in that environment FIRST, then set the flag:
+  ```
+  npm install @imgly/background-removal-node --workspace=@kda/backend
+  # then set IMAGE_SEGMENTATION_ENABLED=true
+  ```
+- If `IMAGE_SEGMENTATION_ENABLED=true` but the package is not installed, segmentation degrades gracefully to the original image (logged, no crash, no behaviour change). Do not add the package to `package.json` unless you also commit the regenerated `package-lock.json`, or `npm ci` will fail.
+
 Printing notes:
 
 - `PRINT_PROVIDER=manual` generates a PDF and returns the PDF URL from print routes. This is safe for demos and for deployments without printer credentials.

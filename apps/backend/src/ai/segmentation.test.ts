@@ -36,6 +36,14 @@ describe('segmentGarment — env-gated, cached, graceful', () => {
     expect(await segmentGarmentOrOriginal(original)).toBe(original);
   });
 
+  test('enabled but @imgly package absent → real dynamic import fails → null, fallback to original', async () => {
+    // No segmenter override → loadSegmenter() does the real dynamic import of the
+    // optional native dep, which is NOT installed, so it must degrade gracefully.
+    __setSegmenterForTests(null);
+    expect(await segmentGarment(original)).toBeNull();
+    expect(await segmentGarmentOrOriginal(original)).toBe(original);
+  });
+
   test('enabled + success → returns segmented buffer', async () => {
     __setSegmenterForTests(async () => segmented);
     expect(await segmentGarment(original)).toBe(segmented);
