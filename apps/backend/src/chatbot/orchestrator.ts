@@ -1862,15 +1862,38 @@ async function respondToProductMatchOutcome(
   const score = outcome?.confidence ?? 0;
 
   if (outcome?.matchedProductId && score >= threshold) {
-    logImageMatchDecision(input, outcome, 'MATCHED', 'direct_availability');
-    await beginOrderFromProduct(input, outcome.matchedProductId, requestedSize, {
-      activeFlowVersion: flowVersion,
-      activeMediaId: sourceMediaId ?? undefined,
-      activeProductMediaId: sourceMediaId ?? undefined,
-      lastMatchedImageMediaId: sourceMediaId ?? undefined,
-      matchConfidence: score,
-    });
-    return;
+    // Only a hash-identical EXACT match (or an AI-verified non-EXACT match) is
+    // safe to auto-confirm. Every other match routes to a one-tap confirmation
+    // gate ("Is this the one you want?") instead of silently creating an order
+    // for a possibly-wrong product. autoConfirm is decided by the matcher.
+    if (outcome.autoConfirm) {
+      logImageMatchDecision(input, outcome, 'MATCHED', 'auto_confirm');
+      await beginOrderFromProduct(input, outcome.matchedProductId, requestedSize, {
+        activeFlowVersion: flowVersion,
+        activeMediaId: sourceMediaId ?? undefined,
+        activeProductMediaId: sourceMediaId ?? undefined,
+        lastMatchedImageMediaId: sourceMediaId ?? undefined,
+        matchConfidence: score,
+      });
+      return;
+    }
+
+    const candidate =
+      outcome.candidates.find((c) => c.productId === outcome.matchedProductId) ?? outcome.candidates[0];
+    if (candidate) {
+      const asked = await askCandidateProductMatchConfirmation(
+        input,
+        candidate,
+        requestedSize,
+        sourceMediaId,
+        flowVersion,
+      );
+      if (asked) {
+        logImageMatchDecision(input, outcome, 'MATCHED', 'candidate_confirmation_gate');
+        return;
+      }
+    }
+    // Candidate unavailable/inactive → fall through to silent no-match.
   }
 
   // Below 0.50 / no candidate / inactive product: send absolutely nothing.
@@ -1889,7 +1912,7 @@ async function respondToProductMatchOutcome(
  * description, stock, scores, alternatives or product lists. Returns false (to
  * stay silent) when the product is missing/inactive or the flow went stale.
  */
-async function _askCandidateProductMatchConfirmation(
+async function askCandidateProductMatchConfirmation(
   input: OrchestratorInput,
   candidate: ProductMatchCandidate,
   requestedSize: string | null,
@@ -2192,9 +2215,11 @@ async function beginOrderFromProduct(
       backingSize: canonical.size,
     });
 
+    // Customer-facing copy intentionally omits the internal product name + article/SKU
+    // (those stay on the order, contextJson and the printed label). The product photo is
+    // still attached via sendImage so the customer sees what they are ordering.
     const freeSizeText =
-      `Yes, it is available.\n\n${availability.name}\n` +
-      `Article: ${availability.sku}\n` +
+      `Yes, it is available.\n` +
       `Price: ₹${availability.basePrice}\n` +
       `Size: ${FREE_SIZE_DISPLAY}\n\n` +
       NAME_QUESTION_MESSAGE;
@@ -2211,10 +2236,10 @@ async function beginOrderFromProduct(
     data: { state: ConversationState.AWAITING_SIZE, contextJson: baseContext as never },
   });
 
-  // SIZED availability message — NO stock counts. Optionally lead with the inventory image.
+  // SIZED availability message — NO stock counts, NO internal name/article (kept on the
+  // order + label only). Optionally lead with the inventory image.
   const availabilityText =
-    `Yes, it is available.\n\n${availability.name}\n` +
-    `Article: ${availability.sku}\n` +
+    `Yes, it is available.\n` +
     `Price: ₹${availability.basePrice}\n` +
     `Available sizes: ${availableSizes.join(', ')}\n\n` +
     'Please send your size.';

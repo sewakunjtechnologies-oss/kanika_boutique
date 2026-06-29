@@ -101,6 +101,7 @@ function matchOutcome() {
     matchedProductId: 'p1', confidence: 0.92, confidenceBand: 'high',
     candidates: [{ productId: 'p1', sku: 'UN-201', name: 'Pure Muslin Unstitched Suit', imageUrl: '/uploads/p1.jpg', confidence: 0.92 }],
     reasoning: 'match', meetsThreshold: true, decision: 'auto_match', bestSecondMargin: 1, matchType: 'EXACT_MATCH',
+    autoConfirm: true,
   };
 }
 
@@ -153,12 +154,21 @@ describe('unstitched product flow — never asks for size', () => {
     expect(ctx.availableSizes).toEqual([]);
 
     const text = sentText();
+    expect(text).toContain('Yes, it is available.');
+    expect(text).toContain('Price: ₹2765');
     expect(text).toContain('Size: Free Size');
     expect(text).toContain('What name should we put on the order?');
     // ZERO size prompts.
     expect(text).not.toMatch(/Please send your size/i);
     expect(text).not.toMatch(/Available sizes/i);
     expect(text).not.toMatch(/what size/i);
+    // Customer copy must NOT leak the internal product name or article/SKU…
+    expect(text).not.toContain('Pure Muslin Unstitched Suit');
+    expect(text).not.toContain('UN-201');
+    expect(text).not.toMatch(/Article:/i);
+    // …but owner-side records (context → order/label) keep full product identity.
+    expect(ctx.productName).toBe('Pure Muslin Unstitched Suit');
+    expect(ctx.productId).toBe('p1');
   });
 
   test('unstitched with zero stock is unavailable (not a size prompt)', async () => {
@@ -207,8 +217,16 @@ describe('stitched product flow — asks for size', () => {
     expect(h.conv.state).toBe('AWAITING_SIZE');
     expect(h.conv.contextJson.sizeMode).toBe('SIZED');
     const text = sentText();
+    expect(text).toContain('Yes, it is available.');
+    expect(text).toContain('Price: ₹2765');
     expect(text).toMatch(/Available sizes/i);
     expect(text).toMatch(/Please send your size/i);
     expect(text).not.toContain('Size: Free Size');
+    // Customer copy must NOT leak internal name/article on the SIZED branch either.
+    expect(text).not.toContain('Pure Muslin Unstitched Suit');
+    expect(text).not.toContain('UN-201');
+    expect(text).not.toMatch(/Article:/i);
+    // Owner-side identity preserved in context.
+    expect(h.conv.contextJson.productName).toBe('Pure Muslin Unstitched Suit');
   });
 });

@@ -42,6 +42,12 @@ describe('buildOrderLabelPayload — size mode on the printed receipt', () => {
     const payload = buildOrderLabelPayload(order('Unstitched Suits', '40') as never);
     expect(payload.size).toBe('Free Size');
     expect(payload.items[0]?.size).toBe('Free Size');
+    // The label (owner-side) must keep full product identity even though the
+    // customer-facing WhatsApp copy hides it.
+    expect(payload.productName).toBe('Pure Muslin Suit');
+    expect(payload.sku).toBe('UN-201');
+    expect(payload.items[0]?.name).toBe('Pure Muslin Suit');
+    expect(payload.items[0]?.sku).toBe('UN-201');
   });
 
   test('unstitched order with a "Free Size" backing variant still prints "Free Size"', () => {

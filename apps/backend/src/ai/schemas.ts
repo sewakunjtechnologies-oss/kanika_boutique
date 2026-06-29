@@ -106,6 +106,25 @@ export const PRODUCT_MATCH_RESPONSE_SCHEMA: Schema = {
   },
 };
 
+// Product-match verifier: a constrained "same product?" yes/no check used to
+// gate non-EXACT perceptual matches before they can auto-confirm.
+export const ProductMatchVerifyResultSchema = z.object({
+  sameProduct: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  reasoning: z.string(),
+});
+export type ProductMatchVerifyResult = z.infer<typeof ProductMatchVerifyResultSchema>;
+
+export const PRODUCT_MATCH_VERIFY_RESPONSE_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  required: ['sameProduct', 'confidence', 'reasoning'],
+  properties: {
+    sameProduct: { type: Type.BOOLEAN },
+    confidence: { type: Type.NUMBER },
+    reasoning: { type: Type.STRING },
+  },
+};
+
 // =============================================================================
 // Payment screenshot extractor
 // =============================================================================

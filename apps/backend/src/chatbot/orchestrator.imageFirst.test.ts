@@ -239,6 +239,11 @@ function outcome(score: number, imageUrl = 'https://cdn.test/p1.jpg') {
     reasoning: 'match',
     meetsThreshold: score >= 0.5,
     decision: score >= 0.5 ? 'auto_match' : 'no_match',
+    matchType: score >= 0.5 ? 'EXACT_MATCH' : null,
+    // These flow tests assume an auto-confirmed (EXACT/verified) match so they can
+    // exercise the downstream availability → size → name path. Non-EXACT gating is
+    // covered separately in the confirmation-gate regression tests.
+    autoConfirm: score >= 0.5,
     bestSecondMargin: 1,
   };
 }
@@ -257,8 +262,9 @@ function availability(sizes: Array<{ size: string; stock: number }>) {
   };
 }
 
+// Customer-facing copy intentionally omits internal product name + article/SKU.
 const EXACT_AVAILABILITY_CAPTION =
-  'Yes, it is available.\n\nBlue Suit\nArticle: SKU1\nPrice: ₹1760\nAvailable sizes: 40\n\nPlease send your size.';
+  'Yes, it is available.\nPrice: ₹1760\nAvailable sizes: 40\n\nPlease send your size.';
 
 describe('direct image availability matching', () => {
   test('8: score below 0.50 → zero responses, no order', async () => {
@@ -281,7 +287,10 @@ describe('direct image availability matching', () => {
     expect(sendImage).toHaveBeenCalledWith('919999999999', { link: expect.stringContaining('/uploads/p1.jpg') }, EXACT_AVAILABILITY_CAPTION);
     expect(sendInteractiveButtons).not.toHaveBeenCalled();
     expect(sendInteractiveList).not.toHaveBeenCalled();
-    expect(allSentText()).toContain('Article: SKU1');
+    // Customer copy no longer leaks internal name/article.
+    expect(allSentText()).not.toContain('Article: SKU1');
+    expect(allSentText()).not.toContain('Blue Suit');
+    expect(allSentText()).toContain('Price: ₹1760');
     expect(allSentText()).toContain('Available sizes: 40');
     expect(allSentText()).toContain('Please send your size.');
     expect(allSentText()).not.toMatch(/pcs|stock|possible match|available products|confirm product/i);
@@ -414,7 +423,9 @@ describe('YES product confirmation → availability by variant stock', () => {
 
     expect(getProductAvailability).toHaveBeenCalledWith('p1'); // correct candidate loaded
     expect(allSentText()).toContain('Available');
-    expect(allSentText()).toContain('Article: ABC-123');
+    // Customer copy no longer leaks internal name/article (kept on order + label only).
+    expect(allSentText()).not.toContain('Article: ABC-123');
+    expect(allSentText()).not.toContain('Three-Piece Kurti');
     expect(h.conv.state).toBe('AWAITING_SIZE');
   });
 

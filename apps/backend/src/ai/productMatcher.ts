@@ -8,7 +8,9 @@ import { env } from '../config/env';
 import { storage } from '../storage';
 import {
   PRODUCT_MATCH_RESPONSE_SCHEMA,
+  PRODUCT_MATCH_VERIFY_RESPONSE_SCHEMA,
   ProductMatchResultSchema,
+  ProductMatchVerifyResultSchema,
   type ProductMatchResult,
   type SupportedImageMimeType,
 } from './schemas';
@@ -86,6 +88,13 @@ export interface ProductMatchOutcome extends ProductMatchResult {
   bestSecondMargin: number | null;
   matchType: ImageMatchType | null;
   decisionReason: string;
+  /**
+   * True only when the match is safe to confirm WITHOUT asking the customer:
+   * a hash-identical EXACT match, or a non-EXACT match the AI verifier confirmed.
+   * When false, a matched product must be routed through the one-tap confirmation
+   * gate instead of silently auto-confirming. Absent ⇒ treat as false.
+   */
+  autoConfirm?: boolean;
 }
 
 export function classifyProductMatchConfidence(confidence: number): ProductMatchConfidenceBand {
@@ -132,6 +141,54 @@ Return matchedProductId set to one of the listed product IDs, or null if no item
 Confidence reflects how visually similar the matched item is. Below 0.8 = "uncertain" — prefer null.
 
 Return ONLY JSON: { "matchedProductId": string|null, "confidence": 0.0-1.0, "reasoning": "brief" }`;
+
+const VERIFY_SYSTEM_PROMPT = `You verify whether two photos show the SAME physical garment/product from an Indian ethnic-wear boutique.
+You are given two images: IMAGE 1 is the customer's photo, IMAGE 2 is a catalog reference photo.
+They may differ in lighting, crop, resolution, background, screenshot UI overlays or being model-worn vs flat — ignore those.
+Decide ONLY on the garment itself: dominant colour, print/embroidery pattern, motif, neckline/sleeve/border design, fabric.
+A DIFFERENT colour or a DIFFERENT print/pattern means NOT the same product, even if the garment type and pose are similar.
+Be strict: when unsure, answer sameProduct=false.
+Return ONLY JSON: { "sameProduct": boolean, "confidence": 0.0-1.0, "reasoning": "brief" }`;
+
+/**
+ * Constrained Gemini "same product?" verifier for a single candidate. Sends only
+ * the customer image + the candidate catalog image (NO customer PII / text).
+ * Returns 'same' | 'different' | 'unavailable' ('unavailable' on disabled/error/
+ * low-confidence so the caller safely falls back to the confirmation gate).
+ */
+export async function verifyProductMatch(input: {
+  queryBase64: string;
+  queryMediaType: SupportedImageMimeType;
+  candidate: { imageBuffer: Buffer; mimeType: SupportedImageMimeType; sku: string };
+}): Promise<'same' | 'different' | 'unavailable'> {
+  try {
+    const { result } = await callJsonOutput({
+      systemPrompt: VERIFY_SYSTEM_PROMPT,
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: 'IMAGE 1 — customer photo:' },
+            { inlineData: { mimeType: input.queryMediaType, data: input.queryBase64 } },
+            { text: 'IMAGE 2 — catalog reference photo:' },
+            { inlineData: { mimeType: input.candidate.mimeType, data: input.candidate.imageBuffer.toString('base64') } },
+            { text: 'Are these the SAME product? Return JSON.' },
+          ],
+        },
+      ],
+      responseSchema: PRODUCT_MATCH_VERIFY_RESPONSE_SCHEMA,
+      schema: ProductMatchVerifyResultSchema,
+      maxOutputTokens: 256,
+    });
+    if (!result) return 'unavailable';
+    // Require a positive, reasonably-confident "same" to upgrade to auto-confirm.
+    if (result.sameProduct && result.confidence >= 0.6) return 'same';
+    return 'different';
+  } catch (err) {
+    botError('ERROR_DETAILS', err, { step: 'ai_verify_product_match', candidateSku: input.candidate.sku });
+    return 'unavailable';
+  }
+}
 
 export async function matchProduct(input: ProductMatchInput): Promise<ProductMatchOutcome> {
   const catalog = input.catalog ?? (await fetchCatalog());
@@ -222,6 +279,34 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
     logImageMatchStages(ranked, catalogImages.length, bestSecondMargin, finalDecision);
 
     if (best && decision === 'auto_match' && confidenceBand === 'high' && hasClearBestMatch) {
+      // Only a hash-identical EXACT match auto-confirms unconditionally. Every
+      // non-EXACT match (NEAR_DUPLICATE/LOCAL_FEATURE/GARMENT_EMBEDDING/GENERAL)
+      // must be confirmed by the customer first — UNLESS the optional Gemini
+      // "same product?" verifier positively confirms it. This prevents the
+      // saturated hand-crafted descriptors from silently auto-confirming a
+      // visually-different garment.
+      const isExact = best.matchType === 'EXACT_MATCH';
+      let autoConfirm = isExact;
+      let verifyReason: string | null = null;
+      if (!isExact && env.IMAGE_VERIFY_WITH_AI && env.GEMINI_API_KEY) {
+        const candidateImage = catalogImages.find((c) => c.productId === best.productId);
+        if (candidateImage) {
+          const verdict = await verifyProductMatch({
+            queryBase64: input.imageBase64,
+            queryMediaType: input.imageMediaType ?? 'image/jpeg',
+            candidate: candidateImage,
+          });
+          autoConfirm = verdict === 'same';
+          verifyReason = verdict;
+          botLog('IMAGE_MATCH_AI_VERIFY', {
+            productId: best.productId,
+            sku: best.sku,
+            matchType: best.matchType,
+            verdict,
+            topScore: best.confidence,
+          });
+        }
+      }
       return {
         matchedProductId: best.productId,
         confidence: best.confidence,
@@ -232,7 +317,8 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
         candidates,
         bestSecondMargin,
         matchType: best.matchType,
-        decisionReason: best.matchType,
+        decisionReason: verifyReason ? `${best.matchType}:ai_${verifyReason}` : best.matchType,
+        autoConfirm,
       };
     }
 

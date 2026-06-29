@@ -57,6 +57,11 @@ const envSchema = z.object({
   // Chatbot behavior.
   CHATBOT_DEBUG: envBool.default(false),
   CHATBOT_ENABLE_AI_IMAGE_MATCHING: envBool.default(false),
+  // When true, a non-EXACT perceptual match is verified with a constrained Gemini
+  // vision "same product?" yes/no check before it can auto-confirm. Disabled (or on
+  // any API error) → the match safely falls back to a one-tap customer confirmation
+  // gate. Requires GEMINI_API_KEY. Never sends customer PII — only product images.
+  IMAGE_VERIFY_WITH_AI: envBool.default(false),
   // Product-photo matching policy. Higher score = better visual match.
   // Canonical production threshold: >= threshold + clear runner-up margin sends
   // one availability reply. Below it: stay silent and never create an order.
