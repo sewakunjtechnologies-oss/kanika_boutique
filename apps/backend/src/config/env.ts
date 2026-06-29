@@ -70,6 +70,12 @@ const envSchema = z.object({
   // off or errors: 'confirm' keeps the one-tap customer confirmation gate (safe
   // default, no silent loss); 'silent' treats it as NO MATCH and sends nothing.
   IMAGE_UNVERIFIED_NON_NEARDUP_POLICY: z.enum(['confirm', 'silent']).default('confirm'),
+  // Garment segmentation (background removal) for the images fed to the AI verifier,
+  // so the shared studio backdrop can't collapse visually-different garments. Lazy-
+  // loads @imgly/background-removal-node only when ON; OFF → original-image behaviour.
+  IMAGE_SEGMENTATION_ENABLED: envBool.default(false),
+  IMAGE_SEGMENTATION_TIMEOUT_MS: z.coerce.number().int().min(250).max(60000).default(4000),
+  IMAGE_SEGMENTATION_CACHE_MAX: z.coerce.number().int().min(1).max(10000).default(256),
   // Product-photo matching policy. Higher score = better visual match.
   // Canonical production threshold: >= threshold + clear runner-up margin sends
   // one availability reply. Below it: stay silent and never create an order.

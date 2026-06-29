@@ -24,6 +24,7 @@ import {
   type ImageCandidate,
   type ImageViewBox,
 } from './imageMatcher';
+import { segmentGarmentOrOriginal } from './segmentation';
 
 export const PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.5;
 export const MEDIUM_PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.5;
@@ -416,15 +417,29 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
           .filter((x): x is { score: ImageMatchScore; image: CatalogImageCandidate } => x !== null);
 
         if (topK.length > 0) {
+          // Garment segmentation: strip the shared studio background from the
+          // customer image + each candidate before the verifier compares them, so
+          // the backdrop can't collapse different garments. No-op (original image)
+          // when disabled or on failure. The heuristic fast path above already ran
+          // on the ORIGINAL frames, so EXACT/NEAR_DUPLICATE screenshots can't regress.
+          const segmentedQuery = await segmentGarmentOrOriginal(queryBuffer);
+          const querySegmented = segmentedQuery !== queryBuffer;
+          const verifierCandidates = await Promise.all(
+            topK.map(async ({ score, image }) => {
+              const segmented = await segmentGarmentOrOriginal(image.imageBuffer);
+              const isSegmented = segmented !== image.imageBuffer;
+              return {
+                productId: score.productId,
+                sku: score.sku,
+                imageBuffer: segmented,
+                mimeType: isSegmented ? ('image/jpeg' as const) : image.mimeType,
+              };
+            }),
+          );
           const selection = await selectMatchingProduct({
-            queryBase64: input.imageBase64,
-            queryMediaType: input.imageMediaType ?? 'image/jpeg',
-            candidates: topK.map(({ score, image }) => ({
-              productId: score.productId,
-              sku: score.sku,
-              imageBuffer: image.imageBuffer,
-              mimeType: image.mimeType,
-            })),
+            queryBase64: querySegmented ? segmentedQuery.toString('base64') : input.imageBase64,
+            queryMediaType: querySegmented ? 'image/jpeg' : input.imageMediaType ?? 'image/jpeg',
+            candidates: verifierCandidates,
           });
 
           if (selection !== 'unavailable') {
