@@ -1896,12 +1896,16 @@ async function respondToProductMatchOutcome(
     // Candidate unavailable/inactive → fall through to silent no-match.
   }
 
-  // Below 0.50 / no candidate / inactive product: send absolutely nothing.
+  // Below 0.50 / no candidate / inactive product: send the customer ABSOLUTELY
+  // NOTHING (no fallback, menu, "press start" or catalog/FAQ). Silence to the
+  // customer, but a logged trace + a dashboard alert so the boutique team can see
+  // an unmatched photo arrived and may want to reply by hand.
   logImageMatchDecision(input, outcome, 'SILENT_NO_MATCH', score < threshold ? 'below_threshold' : 'no_clear_match');
   emitToDashboard('image_unmatched', {
     conversationId: input.conversationId,
     score,
     hasCandidate: Boolean(outcome?.candidates?.[0]),
+    needsHumanReply: true,
   });
   // Intentionally send nothing.
 }

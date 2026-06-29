@@ -125,6 +125,26 @@ export const PRODUCT_MATCH_VERIFY_RESPONSE_SCHEMA: Schema = {
   },
 };
 
+// Multi-candidate product selector: given the customer image + top-K catalog
+// candidate images, choose which (if any) is the SAME physical product.
+// matchedProductId is one of the supplied product ids, or null for "none".
+export const ProductSelectResultSchema = z.object({
+  matchedProductId: z.string().nullable(),
+  confidence: z.number().min(0).max(1),
+  reasoning: z.string(),
+});
+export type ProductSelectResult = z.infer<typeof ProductSelectResultSchema>;
+
+export const PRODUCT_SELECT_RESPONSE_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  required: ['matchedProductId', 'confidence', 'reasoning'],
+  properties: {
+    matchedProductId: { type: Type.STRING, nullable: true },
+    confidence: { type: Type.NUMBER },
+    reasoning: { type: Type.STRING },
+  },
+};
+
 // =============================================================================
 // Payment screenshot extractor
 // =============================================================================

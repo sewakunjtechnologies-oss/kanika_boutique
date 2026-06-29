@@ -38,6 +38,20 @@ describe('stateMachine', () => {
     expect(['SEND_BUTTONS', 'SEND_LIST']).toContain(r.actions[0]?.type);
   });
 
+  test('cancel meta-command → short cancel copy, context reset + human takeover preserved', () => {
+    const r = transition(
+      ConversationState.AWAITING_SIZE,
+      { type: 'META_CANCEL' },
+      { productId: 'prod123' },
+    );
+    expect(r.nextState).toBe(ConversationState.IDLE);
+    const sent = r.actions.find((a) => a.type === 'SEND_TEXT');
+    expect(sent && sent.type === 'SEND_TEXT' ? sent.body : '').toBe('Your in-progress order has been cancelled.');
+    // Behaviour unchanged: still resets context and marks human takeover.
+    expect(r.actions.some((a) => a.type === 'RESET_CONTEXT')).toBe(true);
+    expect(r.actions.some((a) => a.type === 'MARK_HUMAN_TAKEOVER')).toBe(true);
+  });
+
   test('AWAITING_SIZE + button reply → AWAITING_NAME with size + qty=1 (no quantity question)', () => {
     const r = transition(
       ConversationState.AWAITING_SIZE,

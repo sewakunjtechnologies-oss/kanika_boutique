@@ -277,6 +277,33 @@ describe('direct image availability matching', () => {
     expect(createOrderFromContext).not.toHaveBeenCalled();
   });
 
+  test('image no-match (no candidate, e.g. chat screenshot / random photo) → ZERO customer replies, dashboard alert only', async () => {
+    // No candidate at all — not a near-miss, an entirely unmatched image.
+    vi.mocked(matchProduct).mockResolvedValue({
+      matchedProductId: null,
+      confidence: 0,
+      confidenceBand: 'low',
+      candidates: [],
+      reasoning: 'no usable catalog match',
+      meetsThreshold: false,
+      decision: 'no_match',
+      matchType: null,
+      autoConfirm: false,
+      bestSecondMargin: null,
+    } as never);
+
+    await handleInboundMessage(imageInput as never);
+
+    // Customer gets NOTHING — no fallback, menu, "press start" or catalog/FAQ.
+    expect(customerReplyCount()).toBe(0);
+    expect(createOrderFromContext).not.toHaveBeenCalled();
+    // Team visibility: a dashboard alert flagged as needing a human reply.
+    expect(emitToDashboard).toHaveBeenCalledWith(
+      'image_unmatched',
+      expect.objectContaining({ conversationId: 'conv1', needsHumanReply: true }),
+    );
+  });
+
   test('9 + 10 + 13: score >= 0.50 → exactly one availability image, no confirmation/lists/stock', async () => {
     vi.mocked(matchProduct).mockResolvedValue(outcome(0.5) as never);
     vi.mocked(getProductAvailability).mockResolvedValue(availability([{ size: '40', stock: 2 }]) as never);

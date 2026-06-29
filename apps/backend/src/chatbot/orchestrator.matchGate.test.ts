@@ -172,3 +172,56 @@ describe('image-match confirmation gate (false-positive safety net)', () => {
     expect(createOrderFromContext).not.toHaveBeenCalled();
   });
 });
+
+// The Gemini verifier (Task 3) runs INSIDE matchProduct for non-near-duplicates and
+// shapes the outcome. These tests assert the orchestrator honours that contract:
+// a verified pick auto-confirms the CORRECT product; a "none" verdict stays silent.
+describe('fresh-photo verifier outcomes (Task 3)', () => {
+  // Verifier picked the correct product over the heuristic wrong one → autoConfirm.
+  function verifierPickedCorrect() {
+    return {
+      matchedProductId: 'correct-organza', confidence: 0.78, confidenceBand: 'high',
+      candidates: [
+        { productId: 'correct-organza', sku: 'organza-1', name: 'Soft Organza', imageUrl: '/uploads/organza.jpg', confidence: 0.78 },
+        { productId: 'wrong-blue', sku: 'pure-cottan-1', name: 'Pure Cottan', imageUrl: '/uploads/blue.jpg', confidence: 0.9 },
+      ],
+      reasoning: 'general_match:ai_selected', meetsThreshold: true, decision: 'auto_match',
+      matchType: 'GENERAL_MATCH', autoConfirm: true, bestSecondMargin: 0.0,
+    };
+  }
+  // Verifier said "none" → matchProduct returns NO MATCH.
+  function verifierNone() {
+    return {
+      matchedProductId: null, confidence: 0.9, confidenceBand: 'low',
+      candidates: [{ productId: 'wrong-blue', sku: 'pure-cottan-1', name: 'Pure Cottan', imageUrl: '/uploads/blue.jpg', confidence: 0.9 }],
+      reasoning: 'no confident product match (ai_verifier_no_match)', meetsThreshold: false,
+      decision: 'no_match', matchType: 'GENERAL_MATCH', autoConfirm: false, bestSecondMargin: 0.0,
+    };
+  }
+
+  test('verifier picked the correct product → auto-confirms to THAT product, not the heuristic top', async () => {
+    vi.mocked(matchProduct).mockResolvedValue(verifierPickedCorrect() as never);
+    vi.mocked(getProductAvailability).mockResolvedValue(avail('correct-organza', 'organza-1', 'Soft Organza') as never);
+
+    await handleInboundMessage(imageInput as never);
+
+    expect(getProductAvailability).toHaveBeenCalledWith('correct-organza');
+    expect(h.conv.state).toBe('AWAITING_SIZE');
+    expect(h.conv.contextJson.productId).toBe('correct-organza');
+    expect(sendInteractiveButtons).not.toHaveBeenCalled();
+  });
+
+  test('verifier returned "none" → NO MATCH, zero customer replies, no order (Task 2 silence)', async () => {
+    vi.mocked(matchProduct).mockResolvedValue(verifierNone() as never);
+
+    await handleInboundMessage(imageInput as never);
+
+    const replies =
+      vi.mocked(sendText).mock.calls.length +
+      vi.mocked(sendImage).mock.calls.length +
+      vi.mocked(sendInteractiveButtons).mock.calls.length;
+    expect(replies).toBe(0);
+    expect(createOrderFromContext).not.toHaveBeenCalled();
+    expect(getProductAvailability).not.toHaveBeenCalled();
+  });
+});

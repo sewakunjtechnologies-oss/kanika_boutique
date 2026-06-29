@@ -231,7 +231,7 @@ function metaCommandActions(cmd: 'cancel' | 'menu' | 'agent'): TransitionResult 
           { type: 'RESET_CONTEXT' },
           {
             type: 'SEND_TEXT',
-            body: 'Your in-progress order has been cancelled. The bot is paused now so the boutique team can continue normally.',
+            body: 'Your in-progress order has been cancelled.',
           },
           { type: 'MARK_HUMAN_TAKEOVER' },
         ],

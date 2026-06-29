@@ -62,6 +62,14 @@ const envSchema = z.object({
   // any API error) → the match safely falls back to a one-tap customer confirmation
   // gate. Requires GEMINI_API_KEY. Never sends customer PII — only product images.
   IMAGE_VERIFY_WITH_AI: envBool.default(false),
+  // Top-K heuristic candidates handed to the Gemini selector for non-near-duplicate
+  // images, and the minimum verifier confidence required to accept its pick.
+  IMAGE_VERIFY_TOP_K: z.coerce.number().int().min(1).max(5).default(3),
+  IMAGE_VERIFY_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.6),
+  // What to do with a NON-near-duplicate heuristic match when the AI verifier is
+  // off or errors: 'confirm' keeps the one-tap customer confirmation gate (safe
+  // default, no silent loss); 'silent' treats it as NO MATCH and sends nothing.
+  IMAGE_UNVERIFIED_NON_NEARDUP_POLICY: z.enum(['confirm', 'silent']).default('confirm'),
   // Product-photo matching policy. Higher score = better visual match.
   // Canonical production threshold: >= threshold + clear runner-up margin sends
   // one availability reply. Below it: stay silent and never create an order.

@@ -9,8 +9,10 @@ import { storage } from '../storage';
 import {
   PRODUCT_MATCH_RESPONSE_SCHEMA,
   PRODUCT_MATCH_VERIFY_RESPONSE_SCHEMA,
+  PRODUCT_SELECT_RESPONSE_SCHEMA,
   ProductMatchResultSchema,
   ProductMatchVerifyResultSchema,
+  ProductSelectResultSchema,
   type ProductMatchResult,
   type SupportedImageMimeType,
 } from './schemas';
@@ -190,6 +192,114 @@ export async function verifyProductMatch(input: {
   }
 }
 
+const SELECT_SYSTEM_PROMPT = `You match a customer's garment photo to a boutique's catalog of Indian ethnic wear.
+IMAGE 1 is the customer's photo. The following images are candidate catalog products, each preceded by a line "CANDIDATE id=<productId>".
+Decide which ONE candidate (if any) is the SAME physical product as the customer's photo.
+Ignore lighting, crop, resolution, background, screenshot UI, and model-worn vs flat — judge ONLY the garment: dominant colour, print/embroidery pattern, motif, neckline/sleeve/border, fabric.
+A DIFFERENT colour or DIFFERENT print/pattern means it is NOT the same product. If no candidate clearly matches, return matchedProductId = null.
+Be strict: when unsure, return null.
+matchedProductId MUST be exactly one of the provided candidate ids, or null.
+Return ONLY JSON: { "matchedProductId": string|null, "confidence": 0.0-1.0, "reasoning": "brief" }`;
+
+export interface ProductSelectCandidate {
+  productId: string;
+  sku: string;
+  imageBuffer: Buffer;
+  mimeType: SupportedImageMimeType;
+}
+
+/**
+ * Gemini top-K selector for non-near-duplicate images: given the customer image
+ * and the heuristic top-K candidate product images, returns which candidate (if
+ * any) is the SAME physical product. Sends only product images (NO customer PII).
+ * Returns the chosen productId + confidence, null for "none", or 'unavailable'
+ * (disabled/error/invalid) so the caller falls back gracefully — never crashes,
+ * never auto-picks a wrong product on error.
+ */
+export async function selectMatchingProduct(input: {
+  queryBase64: string;
+  queryMediaType: SupportedImageMimeType;
+  candidates: ProductSelectCandidate[];
+}): Promise<{ productId: string | null; confidence: number } | 'unavailable'> {
+  if (input.candidates.length === 0) return 'unavailable';
+  const validIds = new Set(input.candidates.map((c) => c.productId));
+  try {
+    const parts: Part[] = [
+      { text: 'IMAGE 1 — customer photo:' },
+      { inlineData: { mimeType: input.queryMediaType, data: input.queryBase64 } },
+    ];
+    for (const candidate of input.candidates) {
+      parts.push({ text: `CANDIDATE id=${candidate.productId}` });
+      parts.push({ inlineData: { mimeType: candidate.mimeType, data: candidate.imageBuffer.toString('base64') } });
+    }
+    parts.push({ text: 'Which candidate (if any) is the SAME product? Return JSON.' });
+
+    const { result } = await callJsonOutput({
+      systemPrompt: SELECT_SYSTEM_PROMPT,
+      contents: [{ role: 'user', parts }],
+      responseSchema: PRODUCT_SELECT_RESPONSE_SCHEMA,
+      schema: ProductSelectResultSchema,
+      maxOutputTokens: 256,
+    });
+    if (!result) return 'unavailable';
+    // Reject hallucinated ids that aren't in the candidate set.
+    if (result.matchedProductId !== null && !validIds.has(result.matchedProductId)) {
+      return { productId: null, confidence: result.confidence };
+    }
+    return { productId: result.matchedProductId, confidence: result.confidence };
+  } catch (err) {
+    botError('ERROR_DETAILS', err, { step: 'ai_select_matching_product', candidateCount: input.candidates.length });
+    return 'unavailable';
+  }
+}
+
+// Builds a "matched" outcome for a perceptual-path hit. autoConfirm decides
+// whether the orchestrator proceeds silently (true) or via the one-tap gate (false).
+function matchedOutcome(
+  best: ImageMatchScore,
+  candidates: ProductMatchCandidate[],
+  bestSecondMargin: number | null,
+  confidenceBand: ProductMatchConfidenceBand,
+  opts: { autoConfirm: boolean; confidence?: number; decisionReason: string },
+): ProductMatchOutcome {
+  return {
+    matchedProductId: best.productId,
+    confidence: opts.confidence ?? best.confidence,
+    reasoning: `${best.matchType.toLowerCase()} against catalog image for ${best.sku}`,
+    meetsThreshold: true,
+    confidenceBand,
+    decision: 'auto_match',
+    candidates,
+    bestSecondMargin,
+    matchType: best.matchType,
+    decisionReason: opts.decisionReason,
+    autoConfirm: opts.autoConfirm,
+  };
+}
+
+// Builds a NO-MATCH outcome (orchestrator stays silent — no product, no order).
+function noConfidentMatch(
+  best: ImageMatchScore | undefined,
+  candidates: ProductMatchCandidate[],
+  bestSecondMargin: number | null,
+  confidenceBand: ProductMatchConfidenceBand,
+  reason: string,
+): ProductMatchOutcome {
+  return {
+    matchedProductId: null,
+    confidence: best?.confidence ?? 0,
+    reasoning: `no confident product match (${reason})`,
+    meetsThreshold: false,
+    confidenceBand,
+    decision: 'no_match',
+    candidates,
+    bestSecondMargin,
+    matchType: best?.matchType ?? null,
+    decisionReason: reason,
+    autoConfirm: false,
+  };
+}
+
 export async function matchProduct(input: ProductMatchInput): Promise<ProductMatchOutcome> {
   const catalog = input.catalog ?? (await fetchCatalog());
   if (catalog.length === 0) {
@@ -279,47 +389,81 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
     logImageMatchStages(ranked, catalogImages.length, bestSecondMargin, finalDecision);
 
     if (best && decision === 'auto_match' && confidenceBand === 'high' && hasClearBestMatch) {
-      // Only a hash-identical EXACT match auto-confirms unconditionally. Every
-      // non-EXACT match (NEAR_DUPLICATE/LOCAL_FEATURE/GARMENT_EMBEDDING/GENERAL)
-      // must be confirmed by the customer first — UNLESS the optional Gemini
-      // "same product?" verifier positively confirms it. This prevents the
-      // saturated hand-crafted descriptors from silently auto-confirming a
-      // visually-different garment.
       const isExact = best.matchType === 'EXACT_MATCH';
-      let autoConfirm = isExact;
-      let verifyReason: string | null = null;
-      if (!isExact && env.IMAGE_VERIFY_WITH_AI && env.GEMINI_API_KEY) {
-        const candidateImage = catalogImages.find((c) => c.productId === best.productId);
-        if (candidateImage) {
-          const verdict = await verifyProductMatch({
+      const isNearDuplicate = best.matchType === 'NEAR_DUPLICATE_MATCH';
+
+      // FAST PATH — EXACT/NEAR_DUPLICATE (e.g. IG screenshots) are reliable pixel
+      // matches: keep the heuristic result and skip the verifier. EXACT auto-confirms;
+      // NEAR_DUPLICATE routes to the one-tap confirmation gate (autoConfirm=false).
+      if (isExact || isNearDuplicate) {
+        return matchedOutcome(best, candidates, bestSecondMargin, confidenceBand, {
+          autoConfirm: isExact,
+          decisionReason: best.matchType,
+        });
+      }
+
+      // NON-near-duplicate (LOCAL_FEATURE/GARMENT_EMBEDDING/GENERAL): the heuristic
+      // tiers misrank fresh studio photos (saturated descriptors + shared studio
+      // background). Prefer a Gemini top-K selector to pick the SAME product, or
+      // treat it as NO MATCH. Falls back gracefully when the verifier is off/errors.
+      if (env.IMAGE_VERIFY_WITH_AI && env.GEMINI_API_KEY) {
+        const topK = ranked
+          .slice(0, env.IMAGE_VERIFY_TOP_K)
+          .map((score) => {
+            const image = catalogImages.find((c) => c.productId === score.productId);
+            return image ? { score, image } : null;
+          })
+          .filter((x): x is { score: ImageMatchScore; image: CatalogImageCandidate } => x !== null);
+
+        if (topK.length > 0) {
+          const selection = await selectMatchingProduct({
             queryBase64: input.imageBase64,
             queryMediaType: input.imageMediaType ?? 'image/jpeg',
-            candidate: candidateImage,
+            candidates: topK.map(({ score, image }) => ({
+              productId: score.productId,
+              sku: score.sku,
+              imageBuffer: image.imageBuffer,
+              mimeType: image.mimeType,
+            })),
           });
-          autoConfirm = verdict === 'same';
-          verifyReason = verdict;
-          botLog('IMAGE_MATCH_AI_VERIFY', {
-            productId: best.productId,
-            sku: best.sku,
-            matchType: best.matchType,
-            verdict,
-            topScore: best.confidence,
-          });
+
+          if (selection !== 'unavailable') {
+            const accepted =
+              selection.productId !== null && selection.confidence >= env.IMAGE_VERIFY_MIN_CONFIDENCE;
+            botLog('IMAGE_MATCH_AI_SELECT', {
+              heuristicTopSku: best.sku,
+              heuristicMatchType: best.matchType,
+              selectedProductId: selection.productId,
+              selectionConfidence: selection.confidence,
+              minConfidence: env.IMAGE_VERIFY_MIN_CONFIDENCE,
+              accepted,
+            });
+            if (accepted) {
+              const chosen = ranked.find((r) => r.productId === selection.productId) ?? best;
+              return matchedOutcome(chosen, candidates, bestSecondMargin, confidenceBand, {
+                autoConfirm: true,
+                // Verifier is the accuracy authority; ensure the score clears the
+                // downstream order threshold even if the chosen tier scored lower.
+                confidence: Math.max(chosen.confidence, selection.confidence),
+                decisionReason: `${chosen.matchType}:ai_selected`,
+              });
+            }
+            // Verifier said "none"/low confidence → NO MATCH → silent.
+            return noConfidentMatch(best, candidates, bestSecondMargin, confidenceBand, 'ai_verifier_no_match');
+          }
+          // selection === 'unavailable' (API error) → fall through to policy fallback.
         }
       }
-      return {
-        matchedProductId: best.productId,
-        confidence: best.confidence,
-        reasoning: `${best.matchType.toLowerCase()} against catalog image for ${best.sku}`,
-        meetsThreshold: true,
-        confidenceBand,
-        decision: 'auto_match',
-        candidates,
-        bestSecondMargin,
-        matchType: best.matchType,
-        decisionReason: verifyReason ? `${best.matchType}:ai_${verifyReason}` : best.matchType,
-        autoConfirm,
-      };
+
+      // Verifier disabled or unavailable for a non-near-duplicate match.
+      if (env.IMAGE_UNVERIFIED_NON_NEARDUP_POLICY === 'silent') {
+        return noConfidentMatch(best, candidates, bestSecondMargin, confidenceBand, 'unverified_non_near_duplicate_silent');
+      }
+      // Default 'confirm': keep the one-tap confirmation gate with the heuristic best.
+      return matchedOutcome(best, candidates, bestSecondMargin, confidenceBand, {
+        autoConfirm: false,
+        decisionReason: `${best.matchType}:confirm_gate`,
+      });
     }
 
     if (!env.CHATBOT_ENABLE_AI_IMAGE_MATCHING) {
