@@ -35,6 +35,12 @@ import {
   getProductAvailability,
   suggestAlternatives,
 } from './orderService';
+import {
+  FREE_SIZE_CANONICAL,
+  FREE_SIZE_DISPLAY,
+  pickFreeSizeVariant,
+  resolveProductSizeMode,
+} from './sizeMode';
 import { emitToDashboard } from '../realtime/io';
 import type { IncomingMessage } from '../whatsapp/types';
 import fs from 'node:fs/promises';
@@ -2095,6 +2101,16 @@ async function beginOrderFromProduct(
 
   const availableVariants = availability.variants.filter((v) => v.stock > 0);
   const availableSizes = sortSizes([...new Set(availableVariants.map((v) => v.size))]);
+  const resolvedSizeMode = resolveProductSizeMode({ category: availability.category });
+
+  botLog('PRODUCT_SIZE_MODE_RESOLVED', {
+    conversationId: input.conversationId,
+    productId: availability.id,
+    category: availability.category,
+    sizeMode: resolvedSizeMode.sizeMode,
+    requiresSizeSelection: resolvedSizeMode.requiresSizeSelection,
+    reason: resolvedSizeMode.reason,
+  });
 
   botLog('PRODUCT_CONFIRMATION_RECEIVED', {
     conversationId: input.conversationId,
@@ -2103,6 +2119,7 @@ async function beginOrderFromProduct(
     variantCount: availability.variants.length,
     availableVariantCount: availableVariants.length,
     availableSizes,
+    sizeMode: resolvedSizeMode.sizeMode,
     decision: availableVariants.length > 0 ? 'available' : 'unavailable',
   });
 
@@ -2113,6 +2130,7 @@ async function beginOrderFromProduct(
     productPrice: Number(availability.basePrice),
     unitPrice: Number(availability.basePrice),
     qty: 1,
+    sizeMode: resolvedSizeMode.sizeMode,
     availableSizes,
     ...(previousContext.activeFlowVersion !== undefined ? { activeFlowVersion: previousContext.activeFlowVersion } : {}),
     ...(previousContext.activeMediaId ? { activeMediaId: previousContext.activeMediaId } : {}),
@@ -2125,6 +2143,8 @@ async function beginOrderFromProduct(
   };
 
   // No in-stock variant: unavailable. (selectedProductId already saved above.)
+  // Unstitched products are NOT marked unavailable for lacking numeric sizes —
+  // availability is determined purely by whether any in-stock variant exists.
   if (availableVariants.length === 0) {
     await sendText(input.customerWhatsappNumber, 'This product is currently unavailable.');
     await prisma.conversation.update({
@@ -2134,19 +2154,70 @@ async function beginOrderFromProduct(
     return;
   }
 
+  const imageLink = toPublicImageLink(availability.imageUrl);
+
+  // FREE_SIZE (unstitched): never ask for a size. Attach to one canonical in-stock
+  // variant, store FREE_SIZE, and go straight to the customer name. Legacy numeric
+  // size rows are intentionally ignored and never shown to the customer.
+  if (!resolvedSizeMode.requiresSizeSelection) {
+    const canonical = pickFreeSizeVariant(availableVariants);
+    if (!canonical) {
+      await sendText(input.customerWhatsappNumber, 'This product is currently unavailable.');
+      await prisma.conversation.update({
+        where: { id: input.conversationId },
+        data: { state: ConversationState.IDLE, contextJson: {} },
+      });
+      return;
+    }
+
+    const freeSizeContext: OrderContext = {
+      ...baseContext,
+      // No customer-selectable sizes are ever surfaced for a free-size product.
+      availableSizes: [],
+      // Real variant size backs order creation / stock; FREE_SIZE is the display value.
+      variantId: canonical.id,
+      size: canonical.size,
+      selectedSize: FREE_SIZE_CANONICAL,
+    };
+
+    await prisma.conversation.update({
+      where: { id: input.conversationId },
+      data: { state: ConversationState.AWAITING_NAME, contextJson: freeSizeContext as never },
+    });
+
+    botLog('UNSTITCHED_FREE_SIZE_SELECTED', {
+      conversationId: input.conversationId,
+      productId: availability.id,
+      variantId: canonical.id,
+      backingSize: canonical.size,
+    });
+
+    const freeSizeText =
+      `Yes, it is available.\n\n${availability.name}\n` +
+      `Article: ${availability.sku}\n` +
+      `Price: ₹${availability.basePrice}\n` +
+      `Size: ${FREE_SIZE_DISPLAY}\n\n` +
+      NAME_QUESTION_MESSAGE;
+    if (imageLink) {
+      await sendImage(input.customerWhatsappNumber, { link: imageLink }, freeSizeText);
+    } else {
+      await sendText(input.customerWhatsappNumber, freeSizeText);
+    }
+    return;
+  }
+
   await prisma.conversation.update({
     where: { id: input.conversationId },
     data: { state: ConversationState.AWAITING_SIZE, contextJson: baseContext as never },
   });
 
-  // Availability message — NO stock counts. Optionally lead with the inventory image.
+  // SIZED availability message — NO stock counts. Optionally lead with the inventory image.
   const availabilityText =
     `Yes, it is available.\n\n${availability.name}\n` +
     `Article: ${availability.sku}\n` +
     `Price: ₹${availability.basePrice}\n` +
     `Available sizes: ${availableSizes.join(', ')}\n\n` +
     'Please send your size.';
-  const imageLink = toPublicImageLink(availability.imageUrl);
   if (imageLink) {
     await sendImage(input.customerWhatsappNumber, { link: imageLink }, availabilityText);
   } else {

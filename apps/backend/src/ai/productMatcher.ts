@@ -89,8 +89,10 @@ export interface ProductMatchOutcome extends ProductMatchResult {
 }
 
 export function classifyProductMatchConfidence(confidence: number): ProductMatchConfidenceBand {
+  // A single canonical threshold (env.IMAGE_MATCH_THRESHOLD) governs auto-match.
+  // The previous implementation had two identical comparisons, making 'medium'
+  // unreachable; the band is intentionally binary (high/low) around the threshold.
   if (confidence >= env.IMAGE_MATCH_THRESHOLD) return 'high';
-  if (confidence >= env.IMAGE_MATCH_THRESHOLD) return 'medium';
   return 'low';
 }
 

@@ -37,7 +37,7 @@ const order = {
       unitPrice: { toString: () => '2220' },
       variant: {
         size: '40',
-        product: { name: 'Blue Floral Pure Cotton Suit', sku: 'ARTICLE-1' },
+        product: { name: 'Blue Floral Pure Cotton Suit', sku: 'ARTICLE-1', category: 'Stitched Suits' },
       },
     },
   ],

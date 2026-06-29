@@ -16,6 +16,7 @@ import {
 import type { Prisma, PrintJob } from '@kda/db';
 import type { LabelPayload, ManualReceiptReturnSlipPayload, OfflineCustomerSlipPayload } from '@kda/labels';
 import { env } from '../config/env';
+import { displaySizeFor, resolveProductSizeMode } from '../chatbot/sizeMode';
 
 type Tx = Prisma.TransactionClient;
 
@@ -42,6 +43,7 @@ interface OrderForLabel {
       product: {
         name: string;
         sku: string;
+        category: string;
       };
     };
   }[];
@@ -112,7 +114,7 @@ export async function createAutomaticOrderLabelJob(tx: Tx, orderId: string): Pro
       customer: { select: { whatsappNumber: true } },
       items: {
         include: {
-          variant: { include: { product: { select: { name: true, sku: true } } } },
+          variant: { include: { product: { select: { name: true, sku: true, category: true } } } },
         },
       },
     },
@@ -142,7 +144,7 @@ export async function createManualOrderLabelJob(orderId: string, requestedBy: st
       customer: { select: { whatsappNumber: true } },
       items: {
         include: {
-          variant: { include: { product: { select: { name: true, sku: true } } } },
+          variant: { include: { product: { select: { name: true, sku: true, category: true } } } },
         },
       },
     },
@@ -565,6 +567,11 @@ export function parseManualReturnSlipPrintJobPayload(job: Pick<PrintJob, 'payloa
 
 export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
   const firstItem = order.items[0];
+  // Free-size (unstitched) orders attach to a real backing variant whose size may
+  // be a legacy numeric label. The receipt must always read "Free Size", never the
+  // numeric backing size — resolved authoritatively from the product category.
+  const labelSize = (item: OrderForLabel['items'][number]): string =>
+    displaySizeFor(resolveProductSizeMode({ category: item.variant.product.category }).sizeMode, item.variant.size);
   const quantity = order.items.reduce((sum, item) => sum + item.quantity, 0);
   const productSuffix = order.items.length > 1 ? ` +${order.items.length - 1} more` : '';
   const productName = firstItem ? `${firstItem.variant.product.name}${productSuffix}` : 'Order item';
@@ -586,12 +593,12 @@ export function buildOrderLabelPayload(order: OrderForLabel): LabelPayload {
     pincode: order.shippingPincode,
     productName,
     sku: firstItem?.variant.product.sku ?? '-',
-    size: firstItem?.variant.size ?? '-',
+    size: firstItem ? labelSize(firstItem) : '-',
     quantity,
     items: order.items.map((item) => ({
       name: item.variant.product.name,
       sku: item.variant.product.sku,
-      size: item.variant.size,
+      size: labelSize(item),
       quantity: item.quantity,
       unitPrice: moneyNumber(item.unitPrice),
       amount: moneyNumber(item.unitPrice) * item.quantity,

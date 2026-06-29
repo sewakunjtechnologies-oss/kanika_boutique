@@ -77,6 +77,8 @@ export interface OrderContext {
   activeProductReceivedAt?: string;
   selectedProductId?: string;
   selectedSize?: string;
+  /** SIZED → customer picks a size; FREE_SIZE → unstitched, size step bypassed. */
+  sizeMode?: 'SIZED' | 'FREE_SIZE';
   /** Latest processed inbound WhatsApp message id for this conversation. */
   latestInboundMessageId?: string;
 }
