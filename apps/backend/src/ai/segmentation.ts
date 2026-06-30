@@ -38,6 +38,24 @@ export function getSegmentationCacheStats(): { entries: number; maxEntries: numb
   return { entries: cache.size, maxEntries: env.IMAGE_SEGMENTATION_CACHE_MAX };
 }
 
+let moduleResolves: boolean | null = null;
+/**
+ * Diagnostic: whether the optional native segmentation package can be resolved at
+ * runtime (it is installed-on-demand). Does NOT load the model. Cached.
+ */
+export function segmenterModuleResolves(): boolean {
+  if (segmenterOverride) return true;
+  if (moduleResolves === null) {
+    try {
+      require.resolve('@imgly/background-removal-node');
+      moduleResolves = true;
+    } catch {
+      moduleResolves = false;
+    }
+  }
+  return moduleResolves;
+}
+
 type RemoveBackground = (input: Buffer) => Promise<{ arrayBuffer(): Promise<ArrayBuffer> }>;
 
 async function loadSegmenter(): Promise<Segmenter> {

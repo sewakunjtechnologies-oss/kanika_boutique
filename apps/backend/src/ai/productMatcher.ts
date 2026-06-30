@@ -25,6 +25,7 @@ import {
   type ImageViewBox,
 } from './imageMatcher';
 import { prepareVerifierCrop } from './garmentCrop';
+import { segmenterModuleResolves } from './segmentation';
 
 export const PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.5;
 export const MEDIUM_PRODUCT_MATCH_CONFIDENCE_THRESHOLD = 0.5;
@@ -417,6 +418,22 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       // tiers misrank fresh studio photos (saturated descriptors + shared studio
       // background). Prefer a Gemini top-K selector to pick the SAME product, or
       // treat it as NO MATCH. Falls back gracefully when the verifier is off/errors.
+      // TEMP DIAGNOSTIC: prints the EFFECTIVE pipeline config + whether the verifier
+      // will actually run for this non-near-duplicate match.
+      botLog('IMAGE_MATCH_VERIFIER_GATE', {
+        heuristicTopSku: best.sku,
+        heuristicMatchType: best.matchType,
+        imageVerifyWithAi: env.IMAGE_VERIFY_WITH_AI,
+        geminiKeyPresent: Boolean(env.GEMINI_API_KEY),
+        // The LEGACY flag — NOT the verifier; logged to catch the common mix-up.
+        chatbotEnableAiImageMatching: env.CHATBOT_ENABLE_AI_IMAGE_MATCHING,
+        segmentationEnabled: env.IMAGE_SEGMENTATION_ENABLED,
+        segmenterModuleResolves: segmenterModuleResolves(),
+        topK: env.IMAGE_VERIFY_TOP_K,
+        minConfidence: env.IMAGE_VERIFY_MIN_CONFIDENCE,
+        unverifiedPolicy: env.IMAGE_UNVERIFIED_NON_NEARDUP_POLICY,
+        willConsultVerifier: Boolean(env.IMAGE_VERIFY_WITH_AI && env.GEMINI_API_KEY),
+      });
       if (env.IMAGE_VERIFY_WITH_AI && env.GEMINI_API_KEY) {
         const topK = ranked
           .slice(0, env.IMAGE_VERIFY_TOP_K)
@@ -496,6 +513,16 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
       }
 
       // Verifier disabled or unavailable for a non-near-duplicate match.
+      // TEMP DIAGNOSTIC: the verifier did NOT decide this match — this fallback did.
+      botLog('IMAGE_MATCH_POLICY_FALLBACK', {
+        policy: env.IMAGE_UNVERIFIED_NON_NEARDUP_POLICY,
+        branch: env.IMAGE_UNVERIFIED_NON_NEARDUP_POLICY === 'silent' ? 'silent_no_match' : 'heuristic_confirm_gate',
+        shownProductId: env.IMAGE_UNVERIFIED_NON_NEARDUP_POLICY === 'silent' ? null : best.productId,
+        shownSku: env.IMAGE_UNVERIFIED_NON_NEARDUP_POLICY === 'silent' ? null : best.sku,
+        heuristicMatchType: best.matchType,
+        verifierConsulted: false,
+        reason: 'verifier_disabled_or_unavailable',
+      });
       if (env.IMAGE_UNVERIFIED_NON_NEARDUP_POLICY === 'silent') {
         return noConfidentMatch(best, candidates, bestSecondMargin, confidenceBand, 'unverified_non_near_duplicate_silent');
       }
