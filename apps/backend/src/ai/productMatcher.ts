@@ -490,6 +490,10 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
             botLog('IMAGE_MATCH_AI_SELECT', {
               heuristicTopSku: best.sku,
               heuristicMatchType: best.matchType,
+              // The EXACT candidate set handed to the Gemini verifier for this request.
+              verifierCandidateIds: verifierCandidates.map((c) => c.productId),
+              verifierCandidateSkus: verifierCandidates.map((c) => c.sku),
+              verifierCandidateCount: verifierCandidates.length,
               selectedProductId: selection.productId,
               selectionConfidence: selection.confidence,
               minConfidence: env.IMAGE_VERIFY_MIN_CONFIDENCE,
@@ -794,7 +798,12 @@ function logImageMatchStages(
   });
   botLog('IMAGE_MATCH_TOP_CANDIDATES', {
     candidateCount,
-    candidates: ranked.slice(0, 5).map((score, index) => scoreToLog(score, index)),
+    // Log the FULL shortlist that can reach the verifier (top-K, min 8) so we can see
+    // whether the correct product survived the heuristic ranking.
+    topK: env.IMAGE_VERIFY_TOP_K,
+    candidates: ranked
+      .slice(0, Math.max(8, env.IMAGE_VERIFY_TOP_K))
+      .map((score, index) => scoreToLog(score, index)),
   });
   botLog('IMAGE_MATCH_DECISION', {
     candidateCount,
@@ -814,6 +823,7 @@ function scoreToLog(score: ImageMatchScore, index: number): Record<string, unkno
     rank: index + 1,
     productId: score.productId,
     sku: score.sku,
+    name: score.name,
     imageId: score.imageId,
     imageRef: safeImageRef(score.imageUrl),
     matchType: score.matchType,

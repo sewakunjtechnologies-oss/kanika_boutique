@@ -21,6 +21,7 @@ import { customersRouter } from './routes/customers';
 import { settingsRouter } from './routes/settings';
 import { uploadsRouter } from './routes/uploads';
 import { printAgentRouter } from './routes/printAgent';
+import { notificationsRouter } from './routes/notifications';
 import {
   maintenanceQueue,
   scheduleMaintenanceJobs,
@@ -139,6 +140,7 @@ app.use('/api', manualReceiptsRouter);
 app.use('/api', conversationsRouter);
 app.use('/api', customersRouter);
 app.use('/api', settingsRouter);
+app.use('/api', notificationsRouter);
 
 // ===== Generic error handler =====
 // eslint-disable-next-line @typescript-eslint/no-unused-vars

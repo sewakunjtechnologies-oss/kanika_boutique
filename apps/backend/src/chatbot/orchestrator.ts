@@ -62,6 +62,11 @@ import {
   RESUME_CONFIRMATION_MESSAGE,
 } from './pausedResume';
 import { handleSupportReply } from './supportNudge';
+import { escalateToOwner } from './escalation';
+
+// Customer-facing line shown when the customer taps NO on the "Confirm product"
+// prompt — a brief human hand-off; the bot does NOT loop into another guess.
+const TEAM_HANDOFF_MESSAGE = 'Our team will help you with this shortly.';
 
 const HUMAN_TAKEOVER_MS = 6 * 60 * 60 * 1000;
 const NEW_PRODUCT_AFTER_CANCEL_MESSAGE = 'Sure. Please send the new product photo or article number.';
@@ -245,6 +250,31 @@ async function handlePausedConversationInput(
   event: ChatEvent,
 ): Promise<boolean> {
   const ctx = readOrderContext(conv.contextJson);
+
+  // A NEW product photo after a cancel starts a fresh order flow DIRECTLY (match →
+  // confirm) — never the intrusive "previous order cancelled / start fresh?" prompt.
+  // Clear the pause + human takeover and run the matcher on the new photo. Non-image
+  // inputs still go through the cancel/team/resume handling below (unchanged).
+  if (event.type === 'IMAGE') {
+    await prisma.conversation.update({
+      where: { id: conv.id },
+      data: {
+        state: ConversationState.IDLE,
+        contextJson: {},
+        humanTakeover: false,
+        humanTakeoverUntil: null,
+        intent: Intent.ORDER_INTENT,
+      },
+    });
+    emitToDashboard('takeover_changed', {
+      conversationId: conv.id,
+      humanTakeover: false,
+      freshImageStart: true,
+    });
+    await processInboundProductImage(input, event.mediaId, extractRequestedSize(event.caption ?? ''));
+    return true;
+  }
+
   const decision = classifyPausedDecision(event, ctx);
 
   if (decision === 'ignore') return true;
@@ -1670,13 +1700,22 @@ async function askForNewProductAfterRejection(
   await sendText(input.customerWhatsappNumber, PRODUCT_REJECTED_MESSAGE);
 }
 
-async function rejectCandidateProductMatch(input: OrchestratorInput, _ctx: OrderContext): Promise<void> {
-  // NO means silent: clear the candidate and wait for a new photo. Never send
-  // alternatives, product lists or any message.
+async function rejectCandidateProductMatch(input: OrchestratorInput, ctx: OrderContext): Promise<void> {
+  // CASE 2 — the AI matched the WRONG product and the customer tapped NO. Clear the
+  // candidate, escalate to the owner (the AI mis-matched; a human handles it), and
+  // give the customer a brief hand-off line. Never loop the bot into another guess
+  // (no alternatives, no product lists, no re-match).
   await prisma.conversation.update({
     where: { id: input.conversationId },
     data: { state: ConversationState.AWAITING_NEW_PRODUCT, contextJson: {} },
   });
+  await escalateToOwner({
+    conversationId: input.conversationId,
+    customerWhatsappNumber: input.customerWhatsappNumber,
+    reason: 'CUSTOMER_REJECTED',
+    imageUrl: ctx.candidateImageUrl ?? null,
+  });
+  await sendText(input.customerWhatsappNumber, TEAM_HANDOFF_MESSAGE);
 }
 
 function isExpiredCandidateContext(ctx: OrderContext): boolean {
@@ -1907,7 +1946,15 @@ async function respondToProductMatchOutcome(
     hasCandidate: Boolean(outcome?.candidates?.[0]),
     needsHumanReply: true,
   });
-  // Intentionally send nothing.
+  // CASE 1 — no confident match: stay SILENT to the customer, but escalate to the
+  // owner (debounced WhatsApp template + always-on dashboard queue) so the tail is
+  // handled by a human. Never blocks the (silent) flow.
+  await escalateToOwner({
+    conversationId: input.conversationId,
+    customerWhatsappNumber: input.customerWhatsappNumber,
+    reason: 'NO_MATCH',
+  });
+  // Intentionally send nothing to the customer.
 }
 
 /**

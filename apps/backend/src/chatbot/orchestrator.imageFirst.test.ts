@@ -507,13 +507,15 @@ describe('YES product confirmation → availability by variant stock', () => {
     expect(h.conv.state).not.toBe('AWAITING_SIZE');
   });
 
-  test('NO clears the candidate and sends nothing', async () => {
+  test('NO clears the candidate and hands off to the team (Case 2 escalation)', async () => {
     confirmCtx();
 
     await handleInboundMessage(buttonInput('product_confirm_no', 'NO') as never);
 
-    expect(customerReplyCount()).toBe(0);
+    // Brief human hand-off line — no re-guess, no order, candidate cleared.
+    expect(allSentText()).toContain('Our team will help you with this shortly.');
     expect(h.conv.state).toBe('AWAITING_NEW_PRODUCT');
+    expect(createOrderFromContext).not.toHaveBeenCalled();
   });
 
   test('11: size-specific stock is checked only after the customer chooses a size', async () => {

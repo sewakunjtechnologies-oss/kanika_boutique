@@ -69,11 +69,13 @@ vi.mock('./orderService', () => ({
   suggestAlternatives: vi.fn(async () => []),
   createOrderFromContext: vi.fn(),
 }));
+vi.mock('./escalation', () => ({ escalateToOwner: vi.fn(async () => undefined) }));
 
 import { prisma } from '@kda/db';
 import { sendText, sendImage, sendInteractiveButtons } from '../whatsapp/client';
 import { matchProduct } from '../ai/productMatcher';
 import { getProductAvailability, createOrderFromContext } from './orderService';
+import { escalateToOwner } from './escalation';
 import { handleInboundMessage } from './orchestrator';
 
 const imageInput = {
@@ -170,6 +172,11 @@ describe('image-match confirmation gate (false-positive safety net)', () => {
     await handleInboundMessage(buttonInput('product_confirm_no', 'NO') as never);
     expect(h.conv.state).toBe('AWAITING_NEW_PRODUCT');
     expect(createOrderFromContext).not.toHaveBeenCalled();
+    // CASE 2: AI matched wrong, customer rejected → escalate to owner + brief hand-off line.
+    expect(escalateToOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv1', reason: 'CUSTOMER_REJECTED' }),
+    );
+    expect(sendText).toHaveBeenCalledWith('919999999999', 'Our team will help you with this shortly.');
   });
 });
 
@@ -223,5 +230,9 @@ describe('fresh-photo verifier outcomes (Task 3)', () => {
     expect(replies).toBe(0);
     expect(createOrderFromContext).not.toHaveBeenCalled();
     expect(getProductAvailability).not.toHaveBeenCalled();
+    // CASE 1: silent to the customer, but the owner is escalated to handle it.
+    expect(escalateToOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv1', reason: 'NO_MATCH' }),
+    );
   });
 });
