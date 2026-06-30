@@ -3,7 +3,7 @@
 // Photo escalations (NO_MATCH / CUSTOMER_REJECTED) are persisted as
 // DashboardNotification rows by chatbot/escalation.ts. This exposes them so the
 // dashboard can render the queue + unread badge and "mark handled" to clear an item.
-// Live updates arrive via the 'photo_escalation' socket event; this REST surface is
+// Live updates arrive via the 'escalation_created' socket event; this REST surface is
 // the durable backlog + the mark-handled action.
 
 import { Router, type Request, type Response } from 'express';

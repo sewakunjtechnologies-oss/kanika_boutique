@@ -16,7 +16,7 @@ export type DashboardEvent =
   | 'support_requested'
   | 'image_unmatched'
   | 'image_match_candidate'
-  | 'photo_escalation'
+  | 'escalation_created'
   | 'printer_status_changed';
 
 let io: Server | null = null;

@@ -168,23 +168,6 @@ const envSchema = z.object({
   // is an optional comma-separated list of additional recipients.
   OWNER_WHATSAPP_NUMBER: z.string().default(''),
   ADMIN_WHATSAPP_NUMBERS: z.string().default(''),
-
-  // Owner ESCALATION alerts for the human-in-the-loop tail (unmatched / wrong-match
-  // photos). Sent from a SEPARATE Meta-verified WhatsApp number (a different WABA)
-  // because the boutique bot's sender == the owner's number (a number can't message
-  // itself). Business-initiated → must use an APPROVED TEMPLATE, not free text.
-  // Kept fully separate from the META_* customer-messaging creds on purpose.
-  ALERT_ENABLED: envBool.default(false),
-  ALERT_WABA_PHONE_NUMBER_ID: z.string().default(''),
-  ALERT_WABA_ACCESS_TOKEN: z.string().default(''),
-  ALERT_TEMPLATE_NAME: z.string().default('owner_photo_escalation'),
-  ALERT_TEMPLATE_LANGUAGE: z.string().default('en'),
-  ALERT_GRAPH_API_VERSION: z.string().default('v23.0'),
-  // Recipient = the owner's personal WhatsApp number (E.164 without '+').
-  ALERT_RECIPIENT_NUMBER: z.string().default(''),
-  // Max one owner WhatsApp alert per conversation per this many minutes (dashboard
-  // queue is unaffected — it records every escalation).
-  ALERT_DEBOUNCE_MINUTES: z.coerce.number().min(0).max(1440).default(10),
 });
 
 // Treat empty strings as missing so zod's .default(...) kicks in.

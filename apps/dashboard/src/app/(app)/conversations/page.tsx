@@ -69,6 +69,11 @@ export default function ConversationsPage(): React.ReactElement {
 
   useEffect(() => {
     void loadConvs();
+    // Deep-link from the "Needs attention" queue: /conversations?id=<conversationId>.
+    if (typeof window !== 'undefined') {
+      const id = new URLSearchParams(window.location.search).get('id');
+      if (id) setSelectedId(id);
+    }
   }, []);
 
   useEffect(() => {

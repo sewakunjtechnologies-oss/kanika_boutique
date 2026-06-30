@@ -1,19 +1,19 @@
 // Human-in-the-loop escalation for the image-match tail.
 //
 // Two triggers (wired in the orchestrator):
-//   NO_MATCH         — the AI couldn't confidently identify the customer's photo.
+//   NO_MATCH          — the AI couldn't confidently identify the customer's photo.
 //   CUSTOMER_REJECTED — the AI matched a product and the customer tapped NO.
 //
-// Every escalation ALWAYS records to the dashboard queue (persisted
-// DashboardNotification row + live socket event), independent of WhatsApp delivery.
-// On top of that, the owner gets a debounced WhatsApp TEMPLATE alert via the separate
-// alert WABA. Nothing here throws — an alert failure must never break the match flow.
+// Each escalation is PERSISTED (a DashboardNotification row = the durable backlog,
+// readAt == "handled") and EMITTED over socket.io ('escalation_created') so any open
+// dashboard reacts instantly with a ping + toast. There is NO outbound WhatsApp alert
+// — the owner is alerted inside the dashboard PWA (visible badge/queue when closed,
+// live ping when open). Nothing here throws: a failure must never break the match flow.
 
 import { prisma } from '@kda/db';
 import { env } from '../config/env';
 import { botError, botLog } from '../logger';
 import { emitToDashboard } from '../realtime/io';
-import { sendOwnerAlertTemplate } from '../whatsapp/alertClient';
 
 export type EscalationReason = 'NO_MATCH' | 'CUSTOMER_REJECTED';
 
@@ -25,17 +25,7 @@ export interface EscalationInput {
   imageUrl?: string | null;
 }
 
-// In-memory debounce of the OWNER WhatsApp alert (not the dashboard queue), keyed by
-// conversation. Single-process is sufficient for "a confused customer can't spam the
-// owner"; the dashboard queue still records every escalation.
-const lastOwnerAlertAt = new Map<string, number>();
-
-/** Test seam: reset the debounce window. */
-export function __resetEscalationStateForTests(): void {
-  lastOwnerAlertAt.clear();
-}
-
-/** Mask to the last 4 digits — never log full customer numbers. */
+/** Mask to the last 4 digits — never log/persist a full customer number. */
 export function maskCustomerNumber(num: string): string {
   const digits = (num ?? '').replace(/[^\d]/g, '');
   if (digits.length <= 4) return digits ? `••••${digits}` : '••••';
@@ -43,7 +33,7 @@ export function maskCustomerNumber(num: string): string {
 }
 
 export function conversationLink(conversationId: string): string {
-  return `${env.PUBLIC_DASHBOARD_URL.replace(/\/+$/, '')}/conversations/${conversationId}`;
+  return `${env.PUBLIC_DASHBOARD_URL.replace(/\/+$/, '')}/conversations?id=${conversationId}`;
 }
 
 function reasonTitle(reason: EscalationReason): string {
@@ -51,16 +41,15 @@ function reasonTitle(reason: EscalationReason): string {
 }
 
 /**
- * Record + dispatch an escalation. Never throws.
- *  1. Always: persist a DashboardNotification (backlog) + emit a live socket event.
- *  2. Best-effort + debounced + env-gated: owner WhatsApp template alert.
+ * Record + broadcast an escalation. Never throws.
+ *   1. Persist a DashboardNotification (type PHOTO_ESCALATION) — the durable queue.
+ *   2. Emit 'escalation_created' so open dashboards ping + toast immediately.
  */
 export async function escalateToOwner(input: EscalationInput): Promise<void> {
-  const now = Date.now();
   const masked = maskCustomerNumber(input.customerWhatsappNumber);
   const link = conversationLink(input.conversationId);
+  const at = new Date().toISOString();
 
-  // 1) Always-on dashboard queue (works even if WhatsApp send fails / is disabled).
   try {
     await prisma.dashboardNotification.create({
       data: {
@@ -78,16 +67,16 @@ export async function escalateToOwner(input: EscalationInput): Promise<void> {
       },
     });
   } catch (err) {
-    botError('ERROR_DETAILS', err, { step: 'escalation_dashboard_notification', reason: input.reason });
+    botError('ERROR_DETAILS', err, { step: 'escalation_persist', reason: input.reason });
   }
 
-  emitToDashboard('photo_escalation', {
+  emitToDashboard('escalation_created', {
     conversationId: input.conversationId,
     customerMasked: masked,
     reason: input.reason,
     imageUrl: input.imageUrl ?? null,
     conversationLink: link,
-    at: new Date(now).toISOString(),
+    at,
   });
 
   botLog('PHOTO_ESCALATION', {
@@ -96,31 +85,4 @@ export async function escalateToOwner(input: EscalationInput): Promise<void> {
     customerMasked: masked,
     dashboardQueued: true,
   });
-
-  // 2) Owner WhatsApp template alert — debounced + env-gated + best-effort.
-  if (!env.ALERT_ENABLED) return; // dashboard-only fallback
-  const last = lastOwnerAlertAt.get(input.conversationId);
-  if (last !== undefined && now - last < env.ALERT_DEBOUNCE_MINUTES * 60_000) {
-    botLog('ALERT_DEBOUNCED', { conversationId: input.conversationId, reason: input.reason });
-    return;
-  }
-  lastOwnerAlertAt.set(input.conversationId, now);
-
-  try {
-    const outcome = await sendOwnerAlertTemplate({
-      recipientNumber: env.ALERT_RECIPIENT_NUMBER,
-      templateName: env.ALERT_TEMPLATE_NAME,
-      languageCode: env.ALERT_TEMPLATE_LANGUAGE,
-      // {{1}}=masked customer, {{2}}=reason, {{3}}=dashboard conversation link.
-      bodyParams: [masked, input.reason, link],
-    });
-    if (outcome.ok) {
-      botLog('ALERT_SENT', { conversationId: input.conversationId, reason: input.reason });
-    } else {
-      botLog('ALERT_FAILED', { conversationId: input.conversationId, reason: input.reason, cause: outcome.reason });
-    }
-  } catch (err) {
-    botError('ERROR_DETAILS', err, { step: 'escalation_owner_alert', reason: input.reason });
-    botLog('ALERT_FAILED', { conversationId: input.conversationId, reason: input.reason, cause: 'threw' });
-  }
 }
