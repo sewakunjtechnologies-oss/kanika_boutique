@@ -367,8 +367,10 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
 
   if (catalogImages.length > 0) {
     let ranked: Awaited<ReturnType<typeof rankImageMatches>>;
+    const rankStart = Date.now();
     try {
       ranked = await rankImageMatches(queryBuffer, catalogImages);
+      botLog('IMAGE_MATCH_HEURISTIC_TIMING', { ms: Date.now() - rankStart, candidateCount: catalogImages.length });
     } catch (err) {
       botError('ERROR_DETAILS', err, { step: 'perceptual_image_match' });
       return {
@@ -449,7 +451,9 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
           // rack / model. No-op (original image) when disabled or on failure. The
           // heuristic fast path above already ran on the ORIGINAL frames, so
           // EXACT/NEAR_DUPLICATE screenshots can't regress.
+          const queryCropStart = Date.now();
           const queryCrop = await prepareVerifierCrop(queryBuffer, true);
+          botLog('IMAGE_MATCH_QUERY_CROP_TIMING', { ms: Date.now() - queryCropStart, stripped: queryCrop.stripped });
           // Crop-confidence abstain: a blank / non-isolated query crop must NOT be
           // guessed at — return NO MATCH (silent) instead.
           if (queryCrop.confidence < env.IMAGE_CROP_MIN_CONFIDENCE) {
@@ -466,6 +470,7 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
             return noConfidentMatch(best, candidates, bestSecondMargin, confidenceBand, 'low_crop_confidence');
           }
           const queryUsedCrop = queryCrop.buffer !== queryBuffer;
+          const candCropStart = Date.now();
           const verifierCandidates = await Promise.all(
             topK.map(async ({ score, image }) => {
               const crop = await prepareVerifierCrop(image.imageBuffer, false);
@@ -478,11 +483,14 @@ export async function matchProduct(input: ProductMatchInput): Promise<ProductMat
               };
             }),
           );
+          botLog('IMAGE_MATCH_CANDIDATE_CROP_TIMING', { ms: Date.now() - candCropStart, candidates: topK.length });
+          const verifyStart = Date.now();
           const selection = await selectMatchingProduct({
             queryBase64: queryUsedCrop ? queryCrop.buffer.toString('base64') : input.imageBase64,
             queryMediaType: queryUsedCrop ? 'image/jpeg' : input.imageMediaType ?? 'image/jpeg',
             candidates: verifierCandidates,
           });
+          botLog('IMAGE_MATCH_VERIFIER_TIMING', { ms: Date.now() - verifyStart });
 
           if (selection !== 'unavailable') {
             const accepted =

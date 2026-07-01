@@ -90,6 +90,12 @@ const envSchema = z.object({
   IMAGE_SEGMENTATION_ENABLED: envBool.default(false),
   IMAGE_SEGMENTATION_TIMEOUT_MS: z.coerce.number().int().min(250).max(60000).default(4000),
   IMAGE_SEGMENTATION_CACHE_MAX: z.coerce.number().int().min(1).max(10000).default(256),
+  // Circuit breaker: ONNX segmentation is CPU-bound and blocks the event loop, so a
+  // slow/failed segmentation can't be preempted mid-inference. After one segmentation
+  // exceeds IMAGE_SEGMENTATION_TIMEOUT_MS or fails, segmentation is DISABLED for this
+  // cooldown (every call instantly falls back to the original image → fast path), so
+  // a slow Render instance can never grind the match. 0 disables the breaker.
+  IMAGE_SEGMENTATION_BREAKER_COOLDOWN_MS: z.coerce.number().int().min(0).max(3_600_000).default(300_000),
   // Product-photo matching policy. Higher score = better visual match.
   // Canonical production threshold: >= threshold + clear runner-up margin sends
   // one availability reply. Below it: stay silent and never create an order.

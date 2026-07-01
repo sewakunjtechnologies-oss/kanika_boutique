@@ -38,6 +38,34 @@ export function getSegmentationCacheStats(): { entries: number; maxEntries: numb
   return { entries: cache.size, maxEntries: env.IMAGE_SEGMENTATION_CACHE_MAX };
 }
 
+// Circuit breaker — see IMAGE_SEGMENTATION_BREAKER_COOLDOWN_MS. ONNX inference is
+// CPU-bound and blocks the event loop, so the per-image setTimeout can't preempt it
+// mid-inference. Once one segmentation is slow/fails we DISABLE segmentation for a
+// cooldown so a slow instance degrades to the fast path instead of grinding.
+let degradedUntil = 0;
+let segmentationRuns = 0;
+
+function isDegraded(now: number): boolean {
+  return degradedUntil > now;
+}
+
+function tripBreaker(now: number, reason: string, elapsedMs: number): void {
+  const cooldown = env.IMAGE_SEGMENTATION_BREAKER_COOLDOWN_MS;
+  if (cooldown <= 0) return;
+  degradedUntil = now + cooldown;
+  botLog('IMAGE_SEGMENTATION_DEGRADED', { reason, elapsedMs, cooldownMs: cooldown });
+}
+
+/** Test seam: clear the breaker + run counter. */
+export function __resetSegmentationBreakerForTests(): void {
+  degradedUntil = 0;
+  segmentationRuns = 0;
+}
+
+export function isSegmentationDegraded(): boolean {
+  return isDegraded(Date.now());
+}
+
 let moduleResolves: boolean | null = null;
 /**
  * Diagnostic: whether the optional native segmentation package can be resolved at
@@ -114,18 +142,32 @@ function setCache(key: string, value: Buffer | null): void {
 export async function segmentGarment(buffer: Buffer): Promise<Buffer | null> {
   if (!env.IMAGE_SEGMENTATION_ENABLED) return null;
 
+  const now = Date.now();
+  // Fast path while the breaker is tripped — never touch the model.
+  if (isDegraded(now)) return null;
+
   const key = crypto.createHash('sha256').update(buffer).digest('hex');
   const cached = cache.get(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) return cached; // cached crop (or negative) — no model work
 
+  const start = Date.now();
+  const isFirstRun = segmentationRuns === 0; // first run includes the one-time model load
   try {
     const segmenter = await loadSegmenter();
     const result = await withTimeout(segmenter(buffer), env.IMAGE_SEGMENTATION_TIMEOUT_MS);
+    const elapsedMs = Date.now() - start;
+    segmentationRuns += 1;
     setCache(key, result);
-    botLog('IMAGE_SEGMENTED', { bytesIn: buffer.length, bytesOut: result.length, cached: false });
+    botLog('IMAGE_SEGMENTED', { elapsedMs, includesModelLoad: isFirstRun, bytesOut: result.length, cached: false });
+    // CPU-bound inference can overrun the setTimeout cap — trip the breaker so the
+    // NEXT calls skip straight to the fast path instead of blocking again.
+    if (elapsedMs > env.IMAGE_SEGMENTATION_TIMEOUT_MS) tripBreaker(now, 'slow', elapsedMs);
     return result;
   } catch (err) {
+    const elapsedMs = Date.now() - start;
     botError('ERROR_DETAILS', err, { step: 'segment_garment' });
+    botLog('IMAGE_SEGMENTATION_FAILED', { elapsedMs, includesModelLoad: isFirstRun });
+    tripBreaker(now, 'error_or_timeout', elapsedMs);
     setCache(key, null);
     return null;
   }

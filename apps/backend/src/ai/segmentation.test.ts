@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { env } from '../config/env';
 import {
+  __resetSegmentationBreakerForTests,
   __setSegmenterForTests,
   clearSegmentationCache,
   getSegmentationCacheStats,
+  isSegmentationDegraded,
   segmentGarment,
   segmentGarmentOrOriginal,
 } from './segmentation';
@@ -14,13 +16,16 @@ const segmented = Buffer.from('segmented-garment-bytes');
 beforeEach(() => {
   clearSegmentationCache();
   __setSegmenterForTests(null);
+  __resetSegmentationBreakerForTests();
   env.IMAGE_SEGMENTATION_ENABLED = true;
   env.IMAGE_SEGMENTATION_TIMEOUT_MS = 1000;
   env.IMAGE_SEGMENTATION_CACHE_MAX = 256;
+  env.IMAGE_SEGMENTATION_BREAKER_COOLDOWN_MS = 300_000;
 });
 afterEach(() => {
   __setSegmenterForTests(null);
   clearSegmentationCache();
+  __resetSegmentationBreakerForTests();
   env.IMAGE_SEGMENTATION_ENABLED = false;
 });
 
@@ -97,5 +102,42 @@ describe('segmentGarment — env-gated, cached, graceful', () => {
     await segmentGarment(Buffer.from('img-2'));
     await segmentGarment(Buffer.from('img-3'));
     expect(getSegmentationCacheStats().entries).toBe(2);
+  });
+});
+
+describe('segmentation circuit breaker (perf safety net)', () => {
+  test('a failed segmentation trips the breaker → subsequent images skip to the fast path', async () => {
+    const seg = vi.fn(async () => {
+      throw new Error('onnx grind');
+    });
+    __setSegmenterForTests(seg);
+
+    expect(await segmentGarment(Buffer.from('img-A'))).toBeNull();
+    expect(isSegmentationDegraded()).toBe(true);
+
+    // A DIFFERENT image must NOT invoke the model again while degraded.
+    expect(await segmentGarment(Buffer.from('img-B'))).toBeNull();
+    expect(await segmentGarmentOrOriginal(original)).toBe(original);
+    expect(seg).toHaveBeenCalledTimes(1); // only the first (failing) call ever ran
+  });
+
+  test('a slow segmentation (exceeds the per-image cap) trips the breaker', async () => {
+    env.IMAGE_SEGMENTATION_TIMEOUT_MS = 20;
+    // Resolves AFTER the cap → withTimeout rejects → breaker trips.
+    __setSegmenterForTests(() => new Promise<Buffer>((r) => setTimeout(() => r(segmented), 200)));
+    expect(await segmentGarment(Buffer.from('slow'))).toBeNull();
+    expect(isSegmentationDegraded()).toBe(true);
+  });
+
+  test('breaker cooldown = 0 disables the breaker (never degrades)', async () => {
+    env.IMAGE_SEGMENTATION_BREAKER_COOLDOWN_MS = 0;
+    const seg = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    __setSegmenterForTests(seg);
+    await segmentGarment(Buffer.from('x1'));
+    expect(isSegmentationDegraded()).toBe(false);
+    await segmentGarment(Buffer.from('x2')); // still attempts (breaker off)
+    expect(seg).toHaveBeenCalledTimes(2);
   });
 });
