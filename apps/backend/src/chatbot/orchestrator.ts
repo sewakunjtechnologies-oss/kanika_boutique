@@ -2552,25 +2552,7 @@ async function processInboundProductImage(
     return;
   }
 
-  // Hard timeout: the match (download + segment + verify) must always resolve to a
-  // decision OR a MATCH_TIMEOUT escalation — it can never hang the flow (we saw
-  // segmentation stall). Terminal log either way; customer stays silent on timeout.
-  const raced = await runProductMatchWithTimeout(mediaId);
-  if (raced === MATCH_TIMEOUT) {
-    botLog('IMAGE_MATCH_TIMEOUT', {
-      conversationId: input.conversationId,
-      senderLast4: last4(input.customerWhatsappNumber),
-      timeoutMs: env.IMAGE_MATCH_TIMEOUT_MS,
-    });
-    logImageMatchDecision(input, null, 'SILENT_NO_MATCH', 'match_timeout');
-    await escalateToOwner({
-      conversationId: input.conversationId,
-      customerWhatsappNumber: input.customerWhatsappNumber,
-      reason: 'MATCH_TIMEOUT',
-    });
-    return; // customer stays silent; owner handles via the dashboard
-  }
-  const outcome = raced;
+  const outcome = await runProductMatchOutcome(mediaId);
 
   // Latest-message-wins: if a newer customer message arrived while we matched,
   // discard this (possibly slow) result and send nothing.
@@ -2655,29 +2637,6 @@ function logImageMatchDecision(
     topScore: detail.topScore,
     reason,
   });
-}
-
-// Sentinel returned when the match doesn't complete within IMAGE_MATCH_TIMEOUT_MS.
-const MATCH_TIMEOUT = Symbol('MATCH_TIMEOUT');
-
-/**
- * Run the match with a hard timeout. Resolves to the outcome (or null on failure),
- * or the MATCH_TIMEOUT sentinel if it doesn't finish in time. A hung match is left
- * running in the background — its (late) result is simply discarded — so this always
- * resolves and never hangs the conversation turn.
- */
-async function runProductMatchWithTimeout(
-  mediaId: string,
-): Promise<ProductMatchOutcome | null | typeof MATCH_TIMEOUT> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<typeof MATCH_TIMEOUT>((resolve) => {
-    timer = setTimeout(() => resolve(MATCH_TIMEOUT), env.IMAGE_MATCH_TIMEOUT_MS);
-  });
-  try {
-    return await Promise.race([runProductMatchOutcome(mediaId), timeout]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 async function runProductMatchOutcome(mediaId: string): Promise<ProductMatchOutcome | null> {

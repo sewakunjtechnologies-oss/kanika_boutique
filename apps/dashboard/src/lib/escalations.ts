@@ -1,6 +1,6 @@
 import { api } from './api';
 
-export type EscalationReason = 'NO_MATCH' | 'CUSTOMER_REJECTED' | 'MATCH_TIMEOUT';
+export type EscalationReason = 'NO_MATCH' | 'CUSTOMER_REJECTED';
 
 export interface EscalationMetadata {
   reason: EscalationReason;
@@ -42,9 +42,7 @@ export async function markEscalationHandled(id: string): Promise<void> {
 }
 
 export function reasonLabel(reason: EscalationReason): string {
-  if (reason === 'NO_MATCH') return 'Unmatched photo';
-  if (reason === 'CUSTOMER_REJECTED') return 'Customer rejected match';
-  return 'Match timed out';
+  return reason === 'NO_MATCH' ? 'Unmatched photo' : 'Customer rejected match';
 }
 
 /** Local-app path to a conversation (the live link from the backend is absolute). */

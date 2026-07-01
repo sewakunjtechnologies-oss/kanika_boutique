@@ -237,7 +237,7 @@ describe('fresh-photo verifier outcomes (Task 3)', () => {
   });
 });
 
-// FIX 3 — match timeout, and FIX 4 — non-image attachments are ignored.
+// FIX 4 — non-image attachments are ignored.
 const documentInput = {
   conversationId: 'conv1', customerId: 'cust1', customerWhatsappNumber: '919999999999',
   message: { from: '919999999999', id: 'wamid.DOC', timestamp: '1710000300', type: 'document' as const,
@@ -250,21 +250,6 @@ const textInputMsg = (body: string) => ({
 function totalSends() {
   return vi.mocked(sendText).mock.calls.length + vi.mocked(sendImage).mock.calls.length + vi.mocked(sendInteractiveButtons).mock.calls.length;
 }
-
-describe('FIX 3 — match timeout escalates without replying', () => {
-  test('a match that never completes → MATCH_TIMEOUT escalation, customer silent', async () => {
-    env.IMAGE_MATCH_TIMEOUT_MS = 10;
-    // matchProduct hangs forever → the timeout must win.
-    vi.mocked(matchProduct).mockReturnValue(new Promise(() => {}) as never);
-
-    await handleInboundMessage(imageInput as never);
-
-    expect(escalateToOwner).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: 'conv1', reason: 'MATCH_TIMEOUT' }),
-    );
-    expect(totalSends()).toBe(0); // customer stays silent
-  });
-});
 
 describe('FIX 4 — only product IMAGES drive matching', () => {
   test('inbound DOCUMENT (.apk) → no matching, no photo-first nudge, no escalation', async () => {
