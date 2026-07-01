@@ -236,3 +236,59 @@ describe('fresh-photo verifier outcomes (Task 3)', () => {
     );
   });
 });
+
+// FIX 3 — match timeout, and FIX 4 — non-image attachments are ignored.
+const documentInput = {
+  conversationId: 'conv1', customerId: 'cust1', customerWhatsappNumber: '919999999999',
+  message: { from: '919999999999', id: 'wamid.DOC', timestamp: '1710000300', type: 'document' as const,
+    document: { id: 'DOC1', filename: 'app.apk', mime_type: 'application/vnd.android.package-archive' } },
+};
+const textInputMsg = (body: string) => ({
+  conversationId: 'conv1', customerId: 'cust1', customerWhatsappNumber: '919999999999',
+  message: { from: '919999999999', id: 'wamid.TXT', timestamp: '1710000400', type: 'text' as const, text: { body } },
+});
+function totalSends() {
+  return vi.mocked(sendText).mock.calls.length + vi.mocked(sendImage).mock.calls.length + vi.mocked(sendInteractiveButtons).mock.calls.length;
+}
+
+describe('FIX 3 — match timeout escalates without replying', () => {
+  test('a match that never completes → MATCH_TIMEOUT escalation, customer silent', async () => {
+    env.IMAGE_MATCH_TIMEOUT_MS = 10;
+    // matchProduct hangs forever → the timeout must win.
+    vi.mocked(matchProduct).mockReturnValue(new Promise(() => {}) as never);
+
+    await handleInboundMessage(imageInput as never);
+
+    expect(escalateToOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv1', reason: 'MATCH_TIMEOUT' }),
+    );
+    expect(totalSends()).toBe(0); // customer stays silent
+  });
+});
+
+describe('FIX 4 — only product IMAGES drive matching', () => {
+  test('inbound DOCUMENT (.apk) → no matching, no photo-first nudge, no escalation', async () => {
+    vi.mocked(matchProduct).mockResolvedValue(nonExactMatch() as never);
+
+    await handleInboundMessage(documentInput as never);
+
+    expect(matchProduct).not.toHaveBeenCalled();
+    expect(totalSends()).toBe(0);
+    expect(escalateToOwner).not.toHaveBeenCalled();
+  });
+
+  test('inbound DOCUMENT while AWAITING_NEW_PRODUCT → still no "send a photo first" nudge', async () => {
+    h.conv.state = 'AWAITING_NEW_PRODUCT';
+    await handleInboundMessage(documentInput as never);
+    expect(matchProduct).not.toHaveBeenCalled();
+    expect(totalSends()).toBe(0);
+  });
+
+  test('TEXT is unaffected by the non-image gate (reaches normal handling)', async () => {
+    // A plain greeting in IDLE is handled as before (not blocked by the media gate).
+    await handleInboundMessage(textInputMsg('hi') as never);
+    expect(matchProduct).not.toHaveBeenCalled(); // text never runs image matching
+    // (no assertion on replies here — covered by existing text tests; the point is it
+    // is NOT silently dropped by the FIX 4 media gate, which only targets attachments.)
+  });
+});

@@ -76,6 +76,10 @@ const envSchema = z.object({
   // Garment-isolation confidence below which the verifier crop is treated as
   // unusable (blank / not isolated) → NO MATCH rather than a weak guess.
   IMAGE_CROP_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.35),
+  // Hard ceiling on how long one product-image match may run (download + segment +
+  // verify). If it doesn't COMPLETE within this window the match is abandoned, the
+  // customer stays silent, and a MATCH_TIMEOUT escalation is raised for the owner.
+  IMAGE_MATCH_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),
   // What to do with a NON-near-duplicate heuristic match when the AI verifier is
   // off or errors: 'confirm' keeps the one-tap customer confirmation gate (safe
   // default, no silent loss); 'silent' treats it as NO MATCH and sends nothing.

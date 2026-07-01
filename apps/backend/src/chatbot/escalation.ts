@@ -15,7 +15,7 @@ import { env } from '../config/env';
 import { botError, botLog } from '../logger';
 import { emitToDashboard } from '../realtime/io';
 
-export type EscalationReason = 'NO_MATCH' | 'CUSTOMER_REJECTED';
+export type EscalationReason = 'NO_MATCH' | 'CUSTOMER_REJECTED' | 'MATCH_TIMEOUT';
 
 export interface EscalationInput {
   conversationId: string;
@@ -37,7 +37,9 @@ export function conversationLink(conversationId: string): string {
 }
 
 function reasonTitle(reason: EscalationReason): string {
-  return reason === 'NO_MATCH' ? 'Unmatched customer photo' : 'Customer rejected AI match';
+  if (reason === 'NO_MATCH') return 'Unmatched customer photo';
+  if (reason === 'CUSTOMER_REJECTED') return 'Customer rejected AI match';
+  return 'Photo match timed out';
 }
 
 /**

@@ -68,6 +68,16 @@ import { escalateToOwner } from './escalation';
 // prompt — a brief human hand-off; the bot does NOT loop into another guess.
 const TEAM_HANDOFF_MESSAGE = 'Our team will help you with this shortly.';
 
+// Only these inbound message types drive the product/order flow. Everything else
+// (audio, video, document, sticker, location, reaction, contacts, order, system,
+// unsupported) is a non-product attachment → ignored, no matching, no nudge.
+const PRODUCT_FLOW_INBOUND_TYPES: ReadonlySet<IncomingMessage['type']> = new Set([
+  'text',
+  'image',
+  'interactive',
+  'button',
+]);
+
 const HUMAN_TAKEOVER_MS = 6 * 60 * 60 * 1000;
 const NEW_PRODUCT_AFTER_CANCEL_MESSAGE = 'Sure. Please send the new product photo or article number.';
 const PRODUCT_MATCH_CONFIRMATION_TIMEOUT_MS = 30 * 60 * 1000;
@@ -137,13 +147,22 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
   conv = reconciled.conversation;
   if (reconciled.stop) return;
 
-  // 2. Audio / voice notes are always PERSONAL_CHAT — short-circuit before AI.
-  if (input.message.type === 'audio') {
+  // 2. Only IMAGE (product photos), TEXT, and interactive/button replies drive the
+  // order flow. Every other inbound type — voice notes, videos, DOCUMENTS (e.g. an
+  // .apk), stickers, locations, reactions, contacts, etc. — is a NON-PRODUCT
+  // attachment: never run product matching and never send the "send a photo first"
+  // nudge. Ignore silently (message is already stored for the dashboard). This is
+  // strictly about file/media types, not about TEXT content.
+  if (!PRODUCT_FLOW_INBOUND_TYPES.has(input.message.type)) {
     await prisma.conversation.update({
       where: { id: conv.id },
       data: { intent: Intent.PERSONAL_CHAT },
     });
-    logger.info({ conversationId: conv.id }, 'audio message — treating as PERSONAL_CHAT, no bot reply');
+    botLog('INBOUND_NON_PRODUCT_IGNORED', { conversationId: conv.id, messageType: input.message.type });
+    logger.info(
+      { conversationId: conv.id, messageType: input.message.type },
+      'non-product inbound (not image/text/interactive) — no matching, no reply',
+    );
     return;
   }
 
@@ -2532,7 +2551,26 @@ async function processInboundProductImage(
     logImageMatchDecision(input, null, 'SILENT_NO_MATCH', 'inventory_index_empty');
     return;
   }
-  const outcome = await runProductMatchOutcome(mediaId);
+
+  // Hard timeout: the match (download + segment + verify) must always resolve to a
+  // decision OR a MATCH_TIMEOUT escalation — it can never hang the flow (we saw
+  // segmentation stall). Terminal log either way; customer stays silent on timeout.
+  const raced = await runProductMatchWithTimeout(mediaId);
+  if (raced === MATCH_TIMEOUT) {
+    botLog('IMAGE_MATCH_TIMEOUT', {
+      conversationId: input.conversationId,
+      senderLast4: last4(input.customerWhatsappNumber),
+      timeoutMs: env.IMAGE_MATCH_TIMEOUT_MS,
+    });
+    logImageMatchDecision(input, null, 'SILENT_NO_MATCH', 'match_timeout');
+    await escalateToOwner({
+      conversationId: input.conversationId,
+      customerWhatsappNumber: input.customerWhatsappNumber,
+      reason: 'MATCH_TIMEOUT',
+    });
+    return; // customer stays silent; owner handles via the dashboard
+  }
+  const outcome = raced;
 
   // Latest-message-wins: if a newer customer message arrived while we matched,
   // discard this (possibly slow) result and send nothing.
@@ -2617,6 +2655,29 @@ function logImageMatchDecision(
     topScore: detail.topScore,
     reason,
   });
+}
+
+// Sentinel returned when the match doesn't complete within IMAGE_MATCH_TIMEOUT_MS.
+const MATCH_TIMEOUT = Symbol('MATCH_TIMEOUT');
+
+/**
+ * Run the match with a hard timeout. Resolves to the outcome (or null on failure),
+ * or the MATCH_TIMEOUT sentinel if it doesn't finish in time. A hung match is left
+ * running in the background — its (late) result is simply discarded — so this always
+ * resolves and never hangs the conversation turn.
+ */
+async function runProductMatchWithTimeout(
+  mediaId: string,
+): Promise<ProductMatchOutcome | null | typeof MATCH_TIMEOUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof MATCH_TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(MATCH_TIMEOUT), env.IMAGE_MATCH_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([runProductMatchOutcome(mediaId), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function runProductMatchOutcome(mediaId: string): Promise<ProductMatchOutcome | null> {

@@ -1,13 +1,16 @@
 'use client';
 
-// A small "ping" alert tone for escalations, synthesized with the Web Audio API —
-// no bundled binary asset, no dependency. iOS/Safari blocks audio until the first
-// user gesture, so callers must invoke unlock() on the first click/tap; if audio is
-// still unavailable or blocked, every method degrades to a no-op (visual-only) and
-// NEVER throws.
+// Alert "ping" for escalations, backed by a bundled static asset (public/sounds/
+// ping.wav) played through an <audio> element. iOS/Safari blocks audio until the
+// first user gesture, so callers MUST invoke unlock() on the first click/tap: it
+// play()+pause()es a near-silent buffer to prime the element. If audio is still
+// unavailable/blocked, every method degrades to a no-op (visual-only) and NEVER
+// throws.
+
+export const PING_SOUND_URL = '/sounds/ping.wav';
 
 export interface PingPlayer {
-  /** Call on the first user gesture (iOS audio unlock). Safe to call repeatedly. */
+  /** Prime on the first user gesture (iOS audio unlock). Safe to call repeatedly. */
   unlock(): void;
   /** Play the alert ping (no-op when muted, unavailable, or blocked). */
   ping(): void;
@@ -15,84 +18,80 @@ export interface PingPlayer {
   isMuted(): boolean;
 }
 
-type AudioContextLike = {
-  state: string;
+export interface AudioElementLike {
+  volume: number;
+  muted: boolean;
   currentTime: number;
-  destination: unknown;
-  resume(): Promise<void> | void;
-  createOscillator(): {
-    frequency: { value: number };
-    connect(node: unknown): void;
-    start(): void;
-    stop(when?: number): void;
-  };
-  createGain(): {
-    gain: {
-      value: number;
-      setValueAtTime(v: number, t: number): void;
-      exponentialRampToValueAtTime(v: number, t: number): void;
-    };
-    connect(node: unknown): void;
-  };
-};
+  play(): Promise<void> | void;
+  pause(): void;
+}
 
 /**
- * Build a ping player. `getAudioContext` is injectable for tests; in the browser it
- * defaults to window.AudioContext / webkitAudioContext (null when unsupported).
+ * Build a ping player. `createElement` is injectable for tests; in the browser it
+ * defaults to `new Audio(PING_SOUND_URL)` (null when Audio is unsupported).
  */
-export function createPingPlayer(getAudioContext?: () => AudioContextLike | null): PingPlayer {
-  let ctx: AudioContextLike | null = null;
+export function createPingPlayer(createElement?: () => AudioElementLike | null): PingPlayer {
+  let el: AudioElementLike | null = null;
   let muted = false;
 
-  function resolveContext(): AudioContextLike | null {
-    if (ctx) return ctx;
+  function resolveElement(): AudioElementLike | null {
+    if (el) return el;
     try {
-      if (getAudioContext) {
-        ctx = getAudioContext();
-        return ctx;
+      if (createElement) {
+        el = createElement();
+        return el;
       }
-      const w = globalThis as unknown as {
-        AudioContext?: new () => AudioContextLike;
-        webkitAudioContext?: new () => AudioContextLike;
-      };
-      const Ctor = w.AudioContext ?? w.webkitAudioContext;
+      const Ctor = (globalThis as unknown as { Audio?: new (src?: string) => AudioElementLike }).Audio;
       if (!Ctor) return null;
-      ctx = new Ctor();
-      return ctx;
+      el = new Ctor(PING_SOUND_URL);
+      return el;
     } catch {
       return null;
     }
   }
 
-  function tone(frequency: number, peak: number, durationS: number): void {
-    const c = resolveContext();
-    if (!c) return;
+  // A play() may return a promise that rejects (autoplay blocked). Swallow it so we
+  // never surface an unhandled rejection or throw — visual toast/badge still fire.
+  function safePlay(element: AudioElementLike): void {
     try {
-      if (c.state === 'suspended') void c.resume();
-      const osc = c.createOscillator();
-      const gain = c.createGain();
-      osc.frequency.value = frequency;
-      gain.gain.setValueAtTime(0.0001, c.currentTime);
-      gain.gain.exponentialRampToValueAtTime(peak, c.currentTime + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + durationS);
-      osc.connect(gain);
-      gain.connect(c.destination);
-      osc.start();
-      osc.stop(c.currentTime + durationS + 0.01);
+      const p = element.play();
+      if (p && typeof (p as Promise<void>).then === 'function') {
+        (p as Promise<void>).catch(() => undefined);
+      }
     } catch {
-      /* blocked / unavailable → visual-only, never throw */
+      /* blocked → visual-only */
     }
   }
 
   return {
     unlock() {
-      // Prime the context on a user gesture: resume + a near-silent blip so iOS
-      // permits later sounds. Failure is fine — we just fall back to visual-only.
-      tone(440, 0.0001, 0.01);
+      const element = resolveElement();
+      if (!element) return;
+      try {
+        // Play muted, then immediately pause + rewind — this "unlocks" the element
+        // for later programmatic play() on iOS.
+        element.muted = true;
+        element.currentTime = 0;
+        safePlay(element);
+        element.pause();
+        element.currentTime = 0;
+        element.muted = false;
+      } catch {
+        /* never throw */
+      }
     },
     ping() {
       if (muted) return;
-      tone(880, 0.2, 0.35);
+      const element = resolveElement();
+      if (!element) return;
+      try {
+        element.muted = false;
+        element.volume = 1;
+        element.currentTime = 0;
+        safePlay(element);
+      } catch {
+        /* blocked / unavailable → visual-only */
+      }
     },
     setMuted(m: boolean) {
       muted = m;

@@ -93,7 +93,10 @@ export function NeedsAttention(): React.ReactElement {
   const count = items.length;
 
   return (
-    <div className="fixed right-3 top-3 z-50">
+    // On mobile the Sidebar renders a fixed top-bar with the hamburger menu at the
+    // far right, so keep the bell LEFT of it (right-16) to avoid overlap; on md+ the
+    // top-bar is hidden and the bell sits in the top-right corner.
+    <div className="fixed right-16 top-2 z-50 md:right-3 md:top-3">
       <Button
         type="button"
         variant={count > 0 ? 'default' : 'outline'}
