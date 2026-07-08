@@ -10,10 +10,15 @@ build/
 .next/
 out/
 
-# Env
+# Env — never commit real secrets. Only *.example files are tracked.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+!.env.production.example
+# Loose secret / credential dumps that have lived at the repo root
+env.txt
+cookies.txt
+*.cookies
 
 # Logs
 *.log

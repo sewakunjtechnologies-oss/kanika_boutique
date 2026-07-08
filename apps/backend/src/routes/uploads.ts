@@ -105,18 +105,30 @@ uploadsRouter.post(
   },
 );
 
-// Serve uploaded files (auth not required — images can be viewed by customers via WA).
-uploadsRouter.get('/uploads/*', async (req: Request, res: Response): Promise<void> => {
-  const rel = req.params[0] ?? '';
+async function serveUpload(rel: string, res: Response, isPrivate: boolean): Promise<void> {
   try {
-    const absolute = storage.resolve(rel);
+    const absolute = storage.resolve(rel); // assertSafePath rejects traversal
     const buf = await fs.readFile(absolute);
-    res.set('Cache-Control', 'public, max-age=86400');
+    // Customer/payment media is PII — never cache it in shared/CDN caches.
+    res.set('Cache-Control', isPrivate ? 'private, no-store' : 'public, max-age=86400');
     res.set('Content-Type', guessMime(rel));
     res.send(buf);
   } catch {
     res.status(404).end();
   }
+}
+
+// PROTECTED: inbound customer media — payment screenshots, product photos the
+// customer sent — is PII and MUST require an authenticated dashboard session.
+// Registered before the public wildcard so it wins for this prefix.
+uploadsRouter.get('/uploads/whatsapp-media/*', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  await serveUpload(`whatsapp-media/${req.params[0] ?? ''}`, res, true);
+});
+
+// PUBLIC: everything else (e.g. product catalog images) — WhatsApp fetches these
+// by URL when showing availability, so they can't require auth.
+uploadsRouter.get('/uploads/*', async (req: Request, res: Response): Promise<void> => {
+  await serveUpload(req.params[0] ?? '', res, false);
 });
 
 function guessExt(mime: string): string {
