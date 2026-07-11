@@ -74,19 +74,22 @@ class TsplCommandGenerator : PrinterCommandGenerator {
             header("KANIKA DESIGNS", statusBadge)
             idRow("Order", orderId)
             twoColumn(
-                Font.BODY,
+                Font.HEADING,
                 "Date: ${formatDateTime(payload.str("createdAt"))}",
                 "Status: ${statusBadge.fitText(12)}",
             )
-            row(Font.HEADING, "Customer: ${payload.str("customerName", "-").fitText(32)}")
+            row(Font.HEADING, "Customer: ${payload.str("customerName", "-").fitText(30)}")
             twoColumn(
-                Font.BODY,
-                "Phone: ${payload.str("phoneMasked", payload.str("maskedPhone", "-")).fitText(18)}",
+                Font.HEADING,
+                "Phone: ${payload.str("phoneMasked", payload.str("maskedPhone", "-")).fitText(16)}",
                 "Pin: ${payload.str("pincode", "-").fitText(10)}",
             )
-            row(Font.BODY, "Addr: ${compactAddress.fitText(46)}")
+            // The delivery address is what actually gets the parcel to the
+            // customer, so it prints at the readable heading font and WRAPS across
+            // up to two lines instead of being truncated to a single line.
+            addressBlock("Addr: ", compactAddress, Font.HEADING, maxLines = 2)
             if (cityState.isNotBlank()) {
-                row(Font.BODY, cityState.fitText(46))
+                row(Font.HEADING, cityState.fitText(44))
             }
             divider()
             itemRows(items, maxLines = 3)
@@ -120,14 +123,31 @@ class TsplCommandGenerator : PrinterCommandGenerator {
     }
 
     fun generateTestLabel(payload: JsonObject, settings: BridgeSettings): String {
-        val orderId = payload.str("orderId", "KD-TEST-1001")
-        return buildLabel(settings) {
-            header("KANIKA DESIGNS", "TEST")
-            idRow("Job", payload.str("barcodeValue", orderId))
-            row(Font.HEADING, "Printer: 4BARCODE 4B-2054TG")
-            row(Font.BODY, "Label: ${settings.labelSize.wireValue}  Direction: ${settings.direction}")
-            row(Font.BODY, "If sideways, switch DIRECTION 0/1.")
-            barcode(payload.str("barcodeValue", orderId))
+        val fallbackJobId = payload.str("orderId", "KD-TEST-1001").ifBlankText("KD-TEST-1001")
+        val barcodeValue = payload.str("barcodeValue", fallbackJobId).ifBlankText(fallbackJobId)
+        val printerName = payload.str("printerName", "4BARCODE 4B-2054TG").ifBlankText("4BARCODE 4B-2054TG")
+        val labelSize = settings.labelSize
+
+        fun StringBuilder.text(x: Int, y: Int, font: String, value: String) {
+            appendLine("TEXT $x,$y,\"$font\",0,1,1,\"${value.tsplSafe()}\"")
+        }
+
+        return buildString {
+            appendLine("SIZE ${labelSize.widthMm} mm,${labelSize.heightMm} mm")
+            appendLine("GAP 3 mm,0 mm")
+            appendLine("DIRECTION ${settings.direction}")
+            appendLine("REFERENCE 0,0")
+            appendLine("CLS")
+            text(35, 30, "4", "KANIKA PRINT TEST")
+            appendLine("BAR 35,85,740,3")
+            text(35, 115, "3", "Printer: ${printerName.fitText(37)}")
+            text(35, 160, "3", "Label: ${labelSize.wireValue}")
+            text(300, 160, "3", "Direction: ${settings.direction}")
+            text(35, 220, "4", "Job: ${barcodeValue.fitText(24)}")
+            text(35, 285, "3", "If sideways, switch Direction 0/1.")
+            appendLine("BARCODE 180,390,\"128\",95,0,0,2,2,\"${barcodeValue.tsplSafe()}\"")
+            text(265, 505, "3", barcodeValue.fitText(28))
+            appendLine("PRINT 1")
         }
     }
 
@@ -227,6 +247,54 @@ private class LabelBuilder(settings: BridgeSettings) {
         val rightX = max(leftMargin + left.length * font.charWidth + 12, contentRight - rightWidth)
         text(rightX, cursorY, right, font)
         cursorY += font.lineHeight
+    }
+
+    /**
+     * Prints a delivery address at [font], word-wrapped across up to [maxLines]
+     * lines so a long address is never silently collapsed to one truncated line.
+     * The first line carries [prefix] (e.g. "Addr: "); every emitted line is
+     * width-fitted to the label, and any overflow past [maxLines] ends the last
+     * line with a trailing dot. Each line goes through [row], so the same
+     * bottom-of-label guard that protects totals/barcode applies here too.
+     */
+    fun addressBlock(prefix: String, address: String, font: Font, maxLines: Int) {
+        val maxChars = ((contentRight - leftMargin) / font.charWidth).coerceAtLeast(8)
+        wrapWords(address, maxChars, prefix.length, maxLines).forEachIndexed { index, lineText ->
+            row(font, if (index == 0) "$prefix$lineText" else lineText)
+        }
+    }
+
+    /**
+     * Greedy word-wrap into at most [maxLines] lines. Line 0 reserves
+     * [firstIndent] glyphs for a caller prefix; every returned line is guaranteed
+     * to fit [maxChars] glyphs (a single over-long word is hard-cut). If words
+     * remain after [maxLines], the last line ends with a dot so nothing overflows.
+     */
+    private fun wrapWords(text: String, maxChars: Int, firstIndent: Int, maxLines: Int): List<String> {
+        val words = text.replace(Regex("\\s+"), " ").trim().split(" ").filter { it.isNotEmpty() }
+        if (words.isEmpty()) return listOf("")
+        val allLines = mutableListOf<String>()
+        var current = StringBuilder()
+        for (word in words) {
+            val capacity = (if (allLines.isEmpty()) maxChars - firstIndent else maxChars).coerceAtLeast(1)
+            val candidate = if (current.isEmpty()) word else "$current $word"
+            when {
+                candidate.length <= capacity -> current = StringBuilder(candidate)
+                current.isEmpty() -> allLines.add(word.fitText(capacity))
+                else -> {
+                    allLines.add(current.toString())
+                    current = StringBuilder(word)
+                }
+            }
+        }
+        if (current.isNotEmpty()) allLines.add(current.toString())
+        if (allLines.size <= maxLines) return allLines.ifEmpty { listOf("") }
+
+        val kept = allLines.take(maxLines).toMutableList()
+        val lastCapacity = (if (maxLines <= 1) maxChars - firstIndent else maxChars).coerceAtLeast(1)
+        val lastIndex = kept.lastIndex
+        kept[lastIndex] = (kept[lastIndex] + " .").fitText(lastCapacity)
+        return kept
     }
 
     fun divider() {
