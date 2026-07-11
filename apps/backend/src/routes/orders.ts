@@ -619,34 +619,71 @@ ordersRouter.post('/orders/:id/print', requireManagerOrOwner, async (req: Reques
   }
 });
 
+/**
+ * Pre-flight validation for the sticker print endpoint. Pure + exported so the
+ * branch logic is unit-testable without an HTTP harness. Returns the error
+ * response to send, or null when the request may proceed to enqueue a job.
+ */
+export function stickerPrintValidationError(
+  order: { status: OrderStatus; shippingAddress: string } | null,
+): { status: number; body: Record<string, unknown> } | null {
+  if (!order) return { status: 404, body: { error: 'not_found' } };
+  if (!PRINTABLE_STATUSES.includes(order.status)) {
+    return { status: 409, body: { error: 'invalid_status_transition', action: 'print_sticker', status: order.status } };
+  }
+  if (!order.shippingAddress.trim()) return { status: 409, body: { error: 'missing_address' } };
+  return null;
+}
+
+/**
+ * Shapes a failed sticker print into a descriptive JSON body so the dashboard
+ * toast can say WHY instead of an opaque "print_failed". [errorId] correlates
+ * the toast to the server log line.
+ */
+export function describeStickerPrintFailure(err: unknown, errorId: string): {
+  error: 'print_failed';
+  reason: string;
+  errorId: string;
+} {
+  return {
+    error: 'print_failed',
+    reason: err instanceof Error ? err.message : 'unknown error',
+    errorId,
+  };
+}
+
 ordersRouter.post('/orders/:id/print-sticker', requireManagerOrOwner, async (req: Request, res: Response): Promise<void> => {
+  const errorId = `sticker_${Date.now().toString(36)}`;
   try {
     const order = await prisma.order.findUnique({
       where: { id: (req.params.id as string) },
       select: { id: true, status: true, shippingAddress: true },
     });
-    if (!order) {
-      res.status(404).json({ error: 'not_found' });
-      return;
-    }
-    if (!PRINTABLE_STATUSES.includes(order.status)) {
-      res.status(409).json({ error: 'invalid_status_transition', action: 'print_sticker', status: order.status });
-      return;
-    }
-    if (!order.shippingAddress.trim()) {
-      res.status(409).json({ error: 'missing_address' });
+    const validationError = stickerPrintValidationError(order);
+    if (validationError) {
+      res.status(validationError.status).json(validationError.body);
       return;
     }
 
-    const printResult = await printSource({ sourceType: 'WHATSAPP_STICKER', sourceId: order.id });
-    await prisma.order.update({
-      where: { id: order.id },
-      data: { printedAt: new Date(), ...(order.status === OrderStatus.VERIFIED ? { status: OrderStatus.PRINTED } : {}) },
+    // Enqueue an ORDER_LABEL PrintJob for the Android bridge to claim + print —
+    // the same proven path as /reprint-label, manual receipts and test labels.
+    // The order is marked PRINTED by the bridge on real completion
+    // (markPrintJobPrinted), NOT optimistically here, so a job that fails or is
+    // never claimed can never leave the order in a falsely-printed state.
+    const job = await createManualOrderLabelJob(order!.id, req.auth!.sub);
+    emitToDashboard('printer_status_changed', { pendingJobId: job.id, orderId: order!.id });
+    res.status(200).json({
+      ok: true,
+      mode: 'manual',
+      pdfUrl: '',
+      printJobId: job.id,
+      status: job.status,
+      type: job.type,
+      message: 'Sticker print job sent to the label printer.',
     });
-    res.json(printResult);
   } catch (err) {
-    logger.error({ err }, 'sticker print failed');
-    res.status(500).json({ error: 'print_failed' });
+    logger.error({ err, orderId: req.params.id, errorId }, 'sticker print failed');
+    res.status(500).json(describeStickerPrintFailure(err, errorId));
   }
 });
 

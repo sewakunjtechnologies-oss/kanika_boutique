@@ -7,6 +7,7 @@ import {
   cancelPendingTestLabelJobs,
   claimNextPrintJob,
   createAutomaticOrderLabelJob,
+  createManualOrderLabelJob,
   createManualReceiptReprintSlipJob,
   createManualReceiptReturnSlipJob,
   createManualReceiptSlipJob,
@@ -160,6 +161,51 @@ describe('print jobs', () => {
 
     expect(result).toBeNull();
     expect(upsert).not.toHaveBeenCalled();
+  });
+
+  test('print-sticker enqueues a claimable ORDER_LABEL PrintJob (bridge path, not PrintNode PDF)', async () => {
+    vi.spyOn(prisma.order, 'findUnique').mockResolvedValue(order as never);
+    const create = vi.spyOn(prisma.printJob, 'create').mockResolvedValue({
+      id: 'job_sticker',
+      status: PrintJobStatus.PENDING,
+      type: PrintJobType.ORDER_LABEL,
+    } as never);
+
+    const job = await createManualOrderLabelJob(order.id, 'user_1');
+
+    expect(create).toHaveBeenCalledTimes(1);
+    const data = create.mock.calls[0]?.[0].data as { type: string; status: string; idempotencyKey: string };
+    expect(data.type).toBe(PrintJobType.ORDER_LABEL);
+    expect(data.status).toBe(PrintJobStatus.PENDING);
+    expect(data.idempotencyKey).toContain(`ORDER:${order.id}:REPRINT:`);
+    expect(job.type).toBe(PrintJobType.ORDER_LABEL);
+    expect(job.status).toBe(PrintJobStatus.PENDING);
+  });
+
+  test('the bridge then claims the pending ORDER_LABEL job the sticker enqueued', async () => {
+    const pending = { id: 'job_sticker', type: PrintJobType.ORDER_LABEL, status: PrintJobStatus.PENDING };
+    const tx = {
+      printJob: {
+        updateMany: vi.fn()
+          .mockResolvedValueOnce({ count: 0 })
+          .mockResolvedValueOnce({ count: 1 }),
+        findFirst: vi.fn().mockResolvedValue(pending),
+        findUnique: vi.fn().mockResolvedValue({ ...pending, status: PrintJobStatus.CLAIMED }),
+      },
+    };
+    const transactionSpy = vi.spyOn(prisma, '$transaction') as unknown as {
+      mockImplementation: (impl: (callback: unknown) => Promise<unknown>) => void;
+    };
+    transactionSpy.mockImplementation(async (callback: unknown) => {
+      if (typeof callback !== 'function') return [];
+      return (callback as (client: typeof tx) => Promise<unknown>)(tx);
+    });
+
+    const claimed = await claimNextPrintJob('kanika-shop-android-01');
+
+    expect(claimed?.id).toBe('job_sticker');
+    expect(claimed?.type).toBe(PrintJobType.ORDER_LABEL);
+    expect(claimed?.status).toBe(PrintJobStatus.CLAIMED);
   });
 
   test('builds a manual receipt slip payload with serializable money values', () => {
