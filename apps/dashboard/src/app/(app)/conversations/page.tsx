@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Bot, CheckCircle2, ImageIcon, MessagesSquare, PauseCircle, PlayCircle, Trash2, User } from 'lucide-react';
+import { Bell, BellOff, Bot, CheckCircle2, ImageIcon, MessagesSquare, PauseCircle, PlayCircle, Trash2, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -17,6 +17,7 @@ interface ConvSummary {
   intent: string;
   humanTakeover: boolean;
   humanTakeoverUntil: string | null;
+  botMuted: boolean;
   supportNudgeSentAt: string | null;
   supportRequestedAt: string | null;
   contextJson?: ConversationContext;
@@ -115,6 +116,18 @@ export default function ConversationsPage(): React.ReactElement {
       await loadThread(selectedId);
     } catch {
       toast.error('Pause failed');
+    }
+  }
+
+  async function toggleMute(muted: boolean): Promise<void> {
+    if (!selectedId) return;
+    try {
+      await api.post(`/api/conversations/${selectedId}/mute`, { muted });
+      toast.success(muted ? 'Bot muted for this contact' : 'Bot unmuted');
+      await loadConvs();
+      await loadThread(selectedId);
+    } catch {
+      toast.error(muted ? 'Mute failed' : 'Unmute failed');
     }
   }
 
@@ -223,6 +236,11 @@ export default function ConversationsPage(): React.ReactElement {
                     {c.messages[0]?.content ?? `[${c.messages[0]?.messageType ?? ''}]`}
                   </div>
                   <div className="flex gap-1 mt-1">
+                    {c.botMuted && (
+                      <Badge variant="destructive" className="text-[10px]">
+                        Bot muted
+                      </Badge>
+                    )}
                     {c.humanTakeover && (
                       <Badge variant="warning" className="text-[10px]">
                         Human
@@ -302,6 +320,22 @@ export default function ConversationsPage(): React.ReactElement {
                   ) : (
                     <>
                       <PauseCircle size={14} className="mr-1" /> Pause bot
+                    </>
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant={selectedConv.botMuted ? 'destructive' : 'outline'}
+                  onClick={() => void toggleMute(!selectedConv.botMuted)}
+                  title={selectedConv.botMuted ? 'Bot is muted for this contact' : 'Mute the bot for this contact'}
+                >
+                  {selectedConv.botMuted ? (
+                    <>
+                      <BellOff size={14} className="mr-1" /> Unmute bot
+                    </>
+                  ) : (
+                    <>
+                      <Bell size={14} className="mr-1" /> Mute bot
                     </>
                   )}
                 </Button>

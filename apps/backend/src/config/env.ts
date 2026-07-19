@@ -92,6 +92,21 @@ const envSchema = z.object({
   // cooldown (every call instantly falls back to the original image → fast path), so
   // a slow Render instance can never grind the match. 0 disables the breaker.
   IMAGE_SEGMENTATION_BREAKER_COOLDOWN_MS: z.coerce.number().int().min(0).max(3_600_000).default(300_000),
+  // Image flood guard — protects against bulk/manufacturer senders blasting many
+  // photos. A per-conversation sliding-window counter (Redis, survives restarts):
+  // more than IMAGE_FLOOD_MAX product photos within IMAGE_FLOOD_WINDOW_MINUTES
+  // auto-pauses the bot for that conversation, sends ONE notice + ONE dashboard
+  // flag, then stays silent for IMAGE_FLOOD_COOLDOWN_MINUTES (or until the owner
+  // clears takeover). Normal 2-3 photo customers are never affected.
+  IMAGE_FLOOD_MAX: z.coerce.number().int().positive().default(5),
+  IMAGE_FLOOD_WINDOW_MINUTES: z.coerce.number().int().positive().default(2),
+  IMAGE_FLOOD_COOLDOWN_MINUTES: z.coerce.number().int().positive().default(60),
+  // Optional cheap non-garment rejector (TASK 4): when the heuristic top score is
+  // far below threshold, one Gemini flash yes/no "is this a garment?" gate. "no" →
+  // silent ignore (no escalation). Env-gated, default OFF; requires GEMINI_API_KEY.
+  GARMENT_CHECK_ENABLED: envBool.default(false),
+  GARMENT_CHECK_SCORE_CEILING: z.coerce.number().min(0).max(1).default(0.15),
+  GARMENT_CHECK_MODEL: z.string().default('gemini-2.5-flash'),
   // Product-photo matching policy. Higher score = better visual match.
   // Canonical production threshold: >= threshold + clear runner-up margin sends
   // one availability reply. Below it: stay silent and never create an order.

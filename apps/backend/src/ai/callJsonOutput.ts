@@ -9,6 +9,8 @@ export interface JsonOutputCall<T> {
   responseSchema: Schema;
   schema: z.ZodType<T>;
   maxOutputTokens?: number;
+  /** Optional model override (e.g. a cheaper flash model for a yes/no gate). */
+  model?: string;
 }
 
 export interface JsonOutputResult<T> {
@@ -24,7 +26,7 @@ export async function callJsonOutput<T>(opts: JsonOutputCall<T>): Promise<JsonOu
   const ai = getGemini();
 
   const response = await ai.models.generateContent({
-    model: GEMINI_MODEL,
+    model: opts.model ?? GEMINI_MODEL,
     contents: opts.contents,
     config: {
       systemInstruction: opts.systemPrompt,

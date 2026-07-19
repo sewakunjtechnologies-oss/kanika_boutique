@@ -260,6 +260,10 @@ model Conversation {
   intent             Intent            @default(UNKNOWN)
   humanTakeover      Boolean           @default(false)
   humanTakeoverUntil DateTime?
+  // Owner "Mute bot" toggle — permanent human-takeover for this contact (e.g. a
+  // supplier). While true the bot does zero processing: no matching, no replies,
+  // no escalations. Cleared only by toggling mute off.
+  botMuted           Boolean           @default(false)
   lastInboundAt      DateTime          @default(now())
   lastOutboundAt     DateTime?
   supportNudgeSentAt DateTime?

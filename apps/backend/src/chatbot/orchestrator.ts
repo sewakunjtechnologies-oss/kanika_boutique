@@ -63,6 +63,10 @@ import {
 } from './pausedResume';
 import { handleSupportReply } from './supportNudge';
 import { escalateToOwner } from './escalation';
+import { isBotMuted } from './botMute';
+import { evaluateImageFloodForInbound, handleImageFloodBreach } from './imageFloodGuard';
+import { classifyLinkMessage, sendLinkNudge } from './linkNudge';
+import { isGarmentImage, shouldRunGarmentCheck } from './garmentCheck';
 
 // Customer-facing line shown when the customer taps NO on the "Confirm product"
 // prompt — a brief human hand-off; the bot does NOT loop into another guess.
@@ -104,6 +108,41 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
   }
 
   const event = await messageToEvent(input.message);
+  const now = new Date();
+
+  // TASK 2 — Owner "Mute bot": a muted conversation gets ZERO bot processing
+  // (no matching, no replies, no escalations) until the owner unmutes.
+  if (isBotMuted(conv)) {
+    botLog('BOT_MUTED_SKIP', { conversationId: conv.id, messageType: event.type });
+    return;
+  }
+
+  // TASK 1 — Image flood guard: rate-limit bulk photo senders. Runs before every
+  // other gate so that (a) a conversation already in flood cooldown is fully
+  // silenced regardless of message type, and (b) an image mid-cooldown can never
+  // release takeover via the normal image path below.
+  const floodDecision = await evaluateImageFloodForInbound({
+    conversationId: conv.id,
+    contextJson: conv.contextJson,
+    state: conv.state,
+    humanTakeover: conv.humanTakeover,
+    humanTakeoverUntil: conv.humanTakeoverUntil,
+    eventType: event.type,
+    now,
+  });
+  if (floodDecision === 'silenced') {
+    botLog('IMAGE_FLOOD_SILENCED', { conversationId: conv.id, messageType: event.type });
+    return;
+  }
+  if (floodDecision === 'breach') {
+    await handleImageFloodBreach({
+      conversationId: conv.id,
+      customerWhatsappNumber: input.customerWhatsappNumber,
+      contextJson: conv.contextJson,
+      now,
+    });
+    return;
+  }
 
   if (
     event.type === 'TEXT' &&
@@ -164,6 +203,27 @@ export async function handleInboundMessage(input: OrchestratorInput): Promise<vo
       'non-product inbound (not image/text/interactive) — no matching, no reply',
     );
     return;
+  }
+
+  // TASK 3 — Link → screenshot redirect. A URL-only message (e.g. a pasted
+  // Instagram/short link) outside an active order flow gets a single "send a
+  // screenshot" nudge and nothing else: no matching, no FAQ fallback, no URL
+  // fetching. A follow-up image then matches normally; a second link never
+  // re-nudges (debounced per conversation via contextJson.linkNudgeSent).
+  if (event.type === 'TEXT' && !isActiveOrderState(conv.state)) {
+    const linkDecision = classifyLinkMessage(event, readOrderContext(conv.contextJson));
+    if (linkDecision === 'nudge') {
+      await sendLinkNudge({
+        conversationId: conv.id,
+        customerWhatsappNumber: input.customerWhatsappNumber,
+        contextJson: conv.contextJson,
+      });
+      return;
+    }
+    if (linkDecision === 'suppress') {
+      botLog('LINK_NUDGE_SUPPRESSED', { conversationId: conv.id });
+      return;
+    }
   }
 
   // 3. Intent classification. Once a customer is inside an order flow, short
@@ -1965,6 +2025,24 @@ async function respondToProductMatchOutcome(
     hasCandidate: Boolean(outcome?.candidates?.[0]),
     needsHumanReply: true,
   });
+  // TASK 4 (optional, env-gated, default OFF) — when the score is far below
+  // threshold the photo is probably not even a garment. One cheap Gemini-flash
+  // yes/no gate lets us silently ignore obvious non-garments instead of escalating
+  // them. A "no" drops the escalation; anything else (yes / unknown / error) falls
+  // through to the normal escalation so we never silently swallow a real photo.
+  if (sourceMediaId && shouldRunGarmentCheck(score, env.GARMENT_CHECK_ENABLED, env.GARMENT_CHECK_SCORE_CEILING)) {
+    try {
+      const { buffer, mimeType } = await downloadMediaToBuffer(sourceMediaId);
+      const garment = await isGarmentImage(buffer.toString('base64'), mimeType);
+      if (garment === false) {
+        botLog('GARMENT_CHECK_REJECTED', { conversationId: input.conversationId, score });
+        return; // silent ignore — no escalation, no customer reply
+      }
+    } catch (err) {
+      botError('ERROR_DETAILS', err, { step: 'garment_check_download' });
+    }
+  }
+
   // CASE 1 — no confident match: stay SILENT to the customer, but escalate to the
   // owner (debounced WhatsApp template + always-on dashboard queue) so the tail is
   // handled by a human. Never blocks the (silent) flow.

@@ -81,6 +81,12 @@ export interface OrderContext {
   sizeMode?: 'SIZED' | 'FREE_SIZE';
   /** Latest processed inbound WhatsApp message id for this conversation. */
   latestInboundMessageId?: string;
+  /** ISO timestamp until which the bot is silenced after an image-flood breach.
+   * Set by the image flood guard; cleared when the owner resumes the bot. */
+  imageFloodPausedUntil?: string;
+  /** True once the "send a screenshot" nudge has been sent for a link-only
+   * message, so the redirect nudge is delivered at most once per conversation. */
+  linkNudgeSent?: boolean;
 }
 
 // =============================================================================

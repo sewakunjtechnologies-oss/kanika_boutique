@@ -132,6 +132,29 @@ conversationsRouter.post(
   },
 );
 
+const MuteSchema = z.object({ muted: z.boolean() });
+
+// Owner "Mute bot" toggle — permanent human-takeover for a contact (e.g. a
+// supplier). While muted the bot does zero processing; unmuting restores normal
+// flow. Persisted on the Conversation record (visible in the list).
+conversationsRouter.post(
+  '/conversations/:id/mute',
+  async (req: Request, res: Response): Promise<void> => {
+    const parsed = MuteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_input' });
+      return;
+    }
+    const id = req.params.id as string;
+    await prisma.conversation.update({
+      where: { id },
+      data: { botMuted: parsed.data.muted },
+    });
+    emitToDashboard('takeover_changed', { conversationId: id, botMuted: parsed.data.muted });
+    res.json({ ok: true, botMuted: parsed.data.muted });
+  },
+);
+
 conversationsRouter.post(
   '/conversations/:id/start-new-order-from-last-image',
   async (req: Request, res: Response): Promise<void> => {
